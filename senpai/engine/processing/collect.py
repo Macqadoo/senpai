@@ -18,6 +18,7 @@ from senpai.engine.models.metadata import SeeingModel, TrackMode
 from senpai.engine.models.senpai import RateTrackFrame, SenpaiRun, SiderealFrame
 from senpai.engine.plotting.images import plot_single_frame
 from senpai.engine.processing.sidereal import process_astrometry_fits_sidereal
+from senpai.engine.utils.memory import reclaim_process_memory
 from senpai.engine.utils.preprocessing import (
     scale_starfield_coordinates,
 )
@@ -33,6 +34,23 @@ logger = logging.getLogger(__name__)
 def process_senpai_collect(
     file_list: list[ProcessedFitsImage],
     id: str = "senpai",
+    force_track_mode: TrackMode | None = None,
+) -> SenpaiRun:
+    """Process a senpai collect, returning freed heap to the OS afterward.
+
+    Thin wrapper around :func:`_process_senpai_collect` that reclaims process memory after
+    every collect (success or failure) so long-lived workers do not ratchet RSS upward across
+    requests. See :func:`senpai.engine.utils.memory.reclaim_process_memory`.
+    """
+    try:
+        return _process_senpai_collect(file_list, id, force_track_mode)
+    finally:
+        reclaim_process_memory()
+
+
+def _process_senpai_collect(
+    file_list: list[ProcessedFitsImage],
+    collect_id: str = "senpai",
     force_track_mode: TrackMode | None = None,
 ) -> SenpaiRun:
     t_start = time.time()
@@ -67,7 +85,7 @@ def process_senpai_collect(
             logger.debug(f"Saved processed frame: {processed_file_path}")
 
     senpai_run = SenpaiRun.organize_senpai_frames(
-        file_list, id=id, force_track_mode=force_track_mode
+        file_list, id=collect_id, force_track_mode=force_track_mode
     )
 
     valid_sidereal_frame = False

@@ -1,6 +1,6 @@
 [project]
 name = "astro-senpai"
-version = "2.6.0"
+version = "2.6.1"
 description = "SENPAI is a software package for the analysis of astronomical images."
 authors = [
     { name="Zach Gazak", email="jzg@alum.mit.edu" }
@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "arrow>=1.3.0",
-    "astroeasy>=1.2.0",
+    "astroeasy>=1.2.1",
     "astropy>=6.1.7",
     "astroquery>=0.4.11",
     "colorlog>=6.9.0",

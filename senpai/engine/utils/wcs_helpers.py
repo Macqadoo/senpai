@@ -607,9 +607,19 @@ def fit_and_validate_wcs(
         len(world_coords),
     )
 
-    refined_astropy_wcs = fit_wcs_from_points(
-        (x_values, y_values), sky_coords, proj_point="center", sip_degree=sip_degree
-    )
+    # Degenerate matched-star geometry (e.g. positions collapsing to ~one point) makes
+    # fit_wcs_from_points raise "Initial guess is outside of provided bounds". That is a
+    # recoverable refinement failure: fall back to the provided WCS (the same result as a
+    # rejected validation below) rather than letting the ValueError kill the whole collect.
+    try:
+        refined_astropy_wcs = fit_wcs_from_points(
+            (x_values, y_values), sky_coords, proj_point="center", sip_degree=sip_degree
+        )
+    except ValueError as e:
+        logger.warning(
+            "WCS refinement failed (fit_wcs_from_points: %s); using the fallback WCS.", e
+        )
+        return fallback_wcs, None
 
     new_wcs_model = WCSModel.from_astropy_wcs(
         refined_astropy_wcs, image_shape=image_shape
