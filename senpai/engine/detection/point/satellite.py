@@ -348,7 +348,7 @@ def filter_point_sources(
             # Check if PSF is too narrow.  pixel_seeing comes from fits to
             # STARS, which on a rate frame are smeared by tracking motion —
             # the true point PSF can be substantially sharper (a tracked
-            # target measured ~4.2 px against a star-derived 10 px on rme03),
+            # target measured ~4.2 px against a star-derived 10 px on one sensor),
             # so the old seeing/2.5 cut sat exactly on the target width and
             # dropped it on ~half the frames.  /3.5 keeps genuine point
             # sources; the absolute floor still rejects hot pixels and
@@ -522,7 +522,7 @@ def veto_catalog_star_detections(
 
     # The floor absorbs position error in the stored catalog x/y: WCS
     # distortion residuals plus shift-propagation drift reach ~5-7px in the
-    # frame corners (measured on abq01), so a pure seeing-based radius lets
+    # frame corners (measured on one sensor), so a pure seeing-based radius lets
     # bright stars leak through as detections. Keeping the depth cut moderate
     # is what makes this wide a radius safe for the target.
     # Geometry: on a trailed frame each star covers a CAPSULE along its

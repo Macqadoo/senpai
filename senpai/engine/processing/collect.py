@@ -556,7 +556,7 @@ def _process_senpai_collect(
         # as the MEDIAN of matched (catalog-confirmed) detections. The lower
         # quartile of matched counts sits at the noise floor (the deep catalog
         # matches plenty of barely-detected stars), so a p25 floor let dozens
-        # of noise peaks through per frame (abq01 frame 9: 38 at p25, 2 at
+        # of noise peaks through per frame (one sensor frame 9: 38 at p25, 2 at
         # p50). Fainter unmatched sources are overwhelmingly noise peaks.
         matched_counts = []
         unmatched = []
