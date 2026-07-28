@@ -15,6 +15,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   marked processed-but-invalid, as the missing-starfield guard already does.
 - Catch the `ValueError` that `fit_wcs_from_points` raises on degenerate matched-star geometry in
   `fit_and_validate_wcs` and fall back to the provided WCS, rather than failing the whole collect.
+- Return the declared 3-tuple `(mag, mag50, mag90)` from every `_estimate_simple_limiting_magnitude`
+  fallback path. The `no results` and `< 3 catalog stars` branches previously returned a bare float,
+  so `measure_rate_starfield_photometry` / `measure_simple_starfield_photometry` crashed with
+  "cannot unpack non-iterable float" and aborted the whole photometry stage on any sparse or
+  degenerate frame.
 
 ### Changed
 
