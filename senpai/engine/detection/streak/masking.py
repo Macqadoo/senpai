@@ -262,7 +262,7 @@ def analyze_source_shape_fwhm(
     # Calculate length using principal component analysis on analysis points
     # Eigenvalues of the covariance matrix give the variance along the principal axes
     try:
-        evals, evecs = np.linalg.eig(np.array([[cov_xx, cov_xy], [cov_xy, cov_yy]]))
+        evals, evecs = np.linalg.eigh(np.array([[cov_xx, cov_xy], [cov_xy, cov_yy]]))
 
         # Calculate FWHM (Full Width at Half Maximum) using FWHM-thresholded points
         # For a Gaussian distribution, FWHM = 2.355 * sigma

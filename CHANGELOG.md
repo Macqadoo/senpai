@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Decompose the streak pixel covariance in `analyze_source_shape_fwhm` with `np.linalg.eigh`
+  instead of `np.linalg.eig`. The matrix is `[[xx, xy], [xy, yy]]` — symmetric by construction, so
+  its eigenvalues are real by definition. numpy < 2.5 downcast a real `eig` result to `float64`,
+  hiding the general solver's complex branch; **numpy 2.5.0 dropped that downcast**
+  (`np.linalg.eig(np.eye(2))` is now `complex128`), so every streak length became complex and
+  `extract_streak_dims_mapping`'s `round(length / (length_std * 0.5))` raised "type
+  numpy.complex128 doesn't define `__round__`", aborting the entire collect — no frame in the
+  observation returned a WCS. `eigh` is version-independent and faster, and is already what the
+  other six eigendecompositions in the streak code use. This is a pre-existing v2.6.0 bug exposed
+  by a dependency upgrade, not a regression on this branch; note `numpy>=2.2.4` is declared with no
+  upper bound, so any fresh resolve picks up 2.5.x. Measurements are unchanged — only the dtype.
 - Coerce `EXPTIME` to `float` in the rate-to-rate and sidereal-to-rate solvers; a string-valued
   FITS `EXPTIME` header previously crashed the exposure arithmetic.
 - Route around a rate-to-rate frame pair that shares a timestamp instead of dividing the estimated

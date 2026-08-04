@@ -16,9 +16,12 @@ re-introduction (or a revert to ``origin/dev``) is caught immediately:
    ``MAX_KERNEL_FINE_ELEMENTS`` cap that rejects a degenerate (giant) streak length instead of
    OOM-killing the worker (green-only; the degenerate case must never run against the old
    cv2 kernel, which would attempt a catastrophic allocation).
+6. ``masking.analyze_source_shape_fwhm`` -- decomposes the symmetric pixel covariance with
+   ``np.linalg.eigh`` instead of ``np.linalg.eig``, so streak geometry stays real-valued on
+   numpy >= 2.5 (which no longer downcasts a real ``eig`` result to ``float64``).
 
-Guards 1-3 have a real red case (a plain revert of the fixed file to ``origin/dev`` makes the
-matching test raise); guards 4 and 5 are additive/rewrites and are asserted green-only.
+Guards 1-3 and 6 have a real red case (a plain revert of the fixed file to ``origin/dev`` makes
+the matching test fail); guards 4 and 5 are additive/rewrites and are asserted green-only.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from astropy.wcs import WCS
 from senpai.core.config import get_config, initialize_config
 from senpai.core.constants import CONFIG_DIR
 from senpai.engine.detection.kernels import MAX_KERNEL_FINE_ELEMENTS, rectangle_pyramoid
+from senpai.engine.detection.streak.masking import analyze_source_shape_fwhm
 from senpai.engine.detection.streak.rate_rate import solve_rate_from_rate
 from senpai.engine.detection.streak.rate_sidereal import solve_rate_from_sidereal
 from senpai.engine.models.astrometry import WCSMetadata, WCSModel
@@ -528,3 +532,47 @@ def test_rectangle_pyramoid_caps_degenerate_length() -> None:
     assert kernel.ndim == 2
     assert kernel.size > 0
     assert (kernel.shape[0] * 4) * (kernel.shape[1] * 4) <= MAX_KERNEL_FINE_ELEMENTS
+
+
+# --------------------------------------------------------------------------------------
+# Guard 6: streak shape analysis stays real-valued under numpy >= 2.5.
+# --------------------------------------------------------------------------------------
+def test_analyze_source_shape_fwhm_returns_real_geometry() -> None:
+    """Streak geometry must come back real, not ``complex128``.
+
+    Regression: ``analyze_source_shape_fwhm`` decomposed the (symmetric) pixel covariance with
+    ``np.linalg.eig`` -- the GENERAL solver. numpy < 2.5 downcast that result to ``float64``
+    whenever every imaginary part was zero, so the complex branch was invisible. numpy 2.5.0
+    dropped the downcast (``np.linalg.eig(np.eye(2))`` is now ``complex128``), so every streak
+    length became complex, and ``extraction.extract_streak_dims_mapping``'s
+    ``round(length / (length_std * 0.5))`` died with "type numpy.complex128 doesn't define
+    __round__" -- taking down the whole collect. Every rate-frame observation on an affected
+    sensor failed to solve.
+
+    The covariance is ``[[xx, xy], [xy, yy]]`` -- symmetric by construction, so its eigenvalues
+    are real by definition and ``eigh`` is both correct and version-independent. This pins the
+    dtype rather than the numpy version: senpai declares ``numpy>=2.2.4`` with no upper bound.
+    """
+    image = np.zeros((64, 64), dtype=np.float64)
+    angle_deg = 20.0
+    for t in np.linspace(-15.0, 15.0, 120):
+        y = 32.0 + t * np.sin(np.deg2rad(angle_deg))
+        x = 32.0 + t * np.cos(np.deg2rad(angle_deg))
+        image[int(round(y)) - 1 : int(round(y)) + 2, int(round(x)) - 1 : int(round(x)) + 2] = 100.0
+
+    y_coords, x_coords = np.where(image > 0)
+    result = analyze_source_shape_fwhm(image, y_coords, x_coords)
+
+    for key in ("length", "fwhm_major", "fwhm_minor", "orientation"):
+        value = result[key]
+        assert not np.iscomplexobj(value), (
+            f"{key} came back complex ({value!r}) -- the covariance decomposition must use "
+            "np.linalg.eigh, not np.linalg.eig, which returns complex128 on numpy >= 2.5"
+        )
+        # round() is what the caller in extraction.py does; complex128 has no __round__.
+        assert round(float(value), 6) == pytest.approx(float(value), abs=1e-6)
+
+    # Sanity: the fix must not move the measurement, only its dtype.
+    assert float(result["orientation"]) == pytest.approx(angle_deg, abs=2.0)
+    assert float(result["length"]) == pytest.approx(32.0, rel=0.25)
+    assert float(result["fwhm_major"]) > float(result["fwhm_minor"])
