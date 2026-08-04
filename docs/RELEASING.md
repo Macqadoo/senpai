@@ -47,7 +47,9 @@ each release is approved individually.
 
 ## Cutting a release
 
-1. Bump `version` in `pyproject.toml`. Merge to `main`.
+1. Bump `version` in `pyproject.toml`, and in `CHANGELOG.md` rename the
+   `[Unreleased]` heading to `[<version>] - <YYYY-MM-DD>`, adding a fresh empty
+   `[Unreleased]` above it. Merge to `main`.
 2. Tag the release commit as `v<version>` — e.g. `v2.6.1` for version `2.6.1`.
    `make tag` does this from `pyproject.toml` and pushes it.
 3. On GitHub, create a Release pointing at that tag and click **Publish
