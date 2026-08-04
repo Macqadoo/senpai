@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   lint:
@@ -45,3 +45,19 @@ jobs:
             --junitxml=reports/junit/junit.xml \
             --cov=senpai \
             --cov-report=xml
+
+  build:
+    # Packaging check: catches a broken build or bad metadata on a PR rather
+    # than mid-release, when the GitHub Release is already public.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Build distributions
+        run: uv build
+      - name: Check distribution metadata
+        run: uvx twine check dist/*
