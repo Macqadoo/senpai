@@ -55,8 +55,10 @@ def solve_rate_from_sidereal(
     frame_exposure_gap_seconds = abs(
         (sidereal_frame.timestamp - rate_frame.timestamp).total_seconds()
     )
-    rate_exposure_time = rate_frame.frame.header.get("EXPTIME", 1)
-    sidereal_exposure_time = sidereal_frame.frame.header.get("EXPTIME", 1)
+    # FITS headers can store EXPTIME as a string; coerce to float so the exposure arithmetic
+    # below does not crash on a string value (observed on some collects).
+    rate_exposure_time = float(rate_frame.frame.header.get("EXPTIME", 1))
+    sidereal_exposure_time = float(sidereal_frame.frame.header.get("EXPTIME", 1))
 
     pixel_fwhm = sidereal_frame.starfield.detection_metadata.pixel_fwhm
 

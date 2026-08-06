@@ -1863,7 +1863,7 @@ def _estimate_simple_limiting_magnitude(
     """
 
     if not results:
-        return 0.0
+        return (0.0, None, None)
 
     config = _normalize_photometry_config(config)
 
@@ -2326,7 +2326,7 @@ def _estimate_simple_limiting_magnitude(
             f"Final fallback: insufficient catalog results ({len(catalog_results)} < 3), "
             "using conservative default: 15.0"
         )
-        return 15.0  # Conservative default
+        return (15.0, None, None)  # Conservative default
 
     magnitudes = [item[0] for item in catalog_results]
     log_snrs = [np.log10(item[1]) for item in catalog_results]
