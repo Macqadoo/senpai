@@ -313,6 +313,27 @@ def validate_shift_lightweight(
     else:
         box_size = base_box_size
 
+    # Seeded RNG for the random control shifts below.
+    #
+    # These draws are the null distribution the proposed shift is scored against: the shift is
+    # accepted only if it beats the random controls by `min_correlation_ratio`. Drawn from the
+    # GLOBAL unseeded np.random, every run sampled a different null, so a MARGINAL shift passed in
+    # one run and failed in the next. That made the frame's WCS flip solved/unsolved run to run,
+    # which propagated through the chain — measured at 3.3% of frames and 15.7% of observations
+    # changing across two runs of identical code, which is more than enough to swamp a regression
+    # gate and makes an archived result impossible to regenerate.
+    #
+    # The seed is derived from the frame pair, the trial number and the proposed shift, so distinct
+    # shifts still get independent draws while any given shift always sees the same null. Mirrors
+    # the seeded generator already used in engine/utils/wcs_validation.py.
+    rng = np.random.default_rng((
+        int(getattr(source, "index", 0)) & 0xFFFF,
+        int(getattr(target, "index", 0)) & 0xFFFF,
+        int(trial) & 0xFF,
+        int(round(float(shift_x) * 100)) & 0xFFFFF,
+        int(round(float(shift_y) * 100)) & 0xFFFFF,
+    ))
+
     logger.info(
         f"Lightweight validation: shift=({shift_x:.1f}, {shift_y:.1f}), "
         f"box_size={box_size}, random_trials={n_random_trials}"
@@ -414,13 +435,13 @@ def validate_shift_lightweight(
             # Sample perpendicular to shift direction, avoiding the streak
             # Alternate between positive and negative offsets for better coverage
             sign = 1 if i % 2 == 0 else -1
-            perp_offset = sign * np.random.uniform(
+            perp_offset = sign * rng.uniform(
                 min_perpendicular_offset, max_perpendicular_offset
             )
 
             # Add small random component along shift direction (to test slight position errors)
             # Keep this minimal to avoid landing on the streak
-            along_shift_offset = np.random.uniform(
+            along_shift_offset = rng.uniform(
                 -min_perpendicular_offset * 0.3, min_perpendicular_offset * 0.3
             )
 
@@ -466,10 +487,10 @@ def validate_shift_lightweight(
 
         for i in range(n_random_trials):
             sign = 1 if i % 2 == 0 else -1
-            perp_offset = sign * np.random.uniform(
+            perp_offset = sign * rng.uniform(
                 min_perpendicular_offset, max_perpendicular_offset
             )
-            along_streak_offset = np.random.uniform(
+            along_streak_offset = rng.uniform(
                 -min_perpendicular_offset * 0.3, min_perpendicular_offset * 0.3
             )
 
@@ -511,14 +532,14 @@ def validate_shift_lightweight(
 
         for i in range(n_random_trials):
             # Generate random shift in an annulus around proposed shift
-            angle = np.random.uniform(0, 2 * np.pi)
+            angle = rng.uniform(0, 2 * np.pi)
             # Use annulus (ring) instead of full circle to ensure separation
             if min_perpendicular_offset > 0:
-                radius = np.random.uniform(
+                radius = rng.uniform(
                     min_perpendicular_offset, max_perpendicular_offset
                 )
             else:
-                radius = np.random.uniform(0, max_perpendicular_offset)
+                radius = rng.uniform(0, max_perpendicular_offset)
             rand_x = shift_x + radius * np.cos(angle)
             rand_y = shift_y + radius * np.sin(angle)
 
