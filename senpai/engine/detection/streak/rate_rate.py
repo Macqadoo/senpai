@@ -221,8 +221,26 @@ def solve_rate_from_rate(
     frame_exposure_gap_seconds = abs(
         (rate_frame_a.timestamp - rate_frame_b.timestamp).total_seconds()
     )
-    rate_a_exposure_time = rate_frame_a.frame.header.get("EXPTIME", 1)
-    rate_b_exposure_time = rate_frame_b.frame.header.get("EXPTIME", 1)
+
+    # Two rate frames sharing a timestamp (duplicate/degenerate DATE-OBS) make this gap zero,
+    # which divides the estimated pixel track rate to infinity further down and crashes streak
+    # sizing (int(inf)). Route around the pair -- as the missing-starfield guard above does --
+    # rather than killing the whole collect.
+    if frame_exposure_gap_seconds <= 0:
+        logger.warning(
+            "Skipping rate-to-rate shift %d->%d: non-positive inter-frame gap (%.3f s) "
+            "(duplicate/degenerate frame timing).",
+            frame_shift.source_index, frame_shift.target_index, frame_exposure_gap_seconds,
+        )
+        frame_shift.processed = True
+        frame_shift.is_valid = False
+        frame_shift.error_message = "Non-positive inter-frame gap (degenerate frame timing)"
+        return
+
+    # FITS headers can store EXPTIME as a string; the raw value then breaks the exposure
+    # arithmetic below (a real crash observed on some collects). Coerce to float.
+    rate_a_exposure_time = float(rate_frame_a.frame.header.get("EXPTIME", 1))
+    rate_b_exposure_time = float(rate_frame_b.frame.header.get("EXPTIME", 1))
 
     # Get the average pixel track rate if available from both frames
     rates = []

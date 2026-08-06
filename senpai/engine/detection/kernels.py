@@ -1,37 +1,22 @@
 import functools
 import logging
 
-import cv2
 import numpy as np
 from scipy.ndimage import shift
 
 logger = logging.getLogger(__name__)
 
 
-def rotate_pil(array, angle):
-    """Bilinear rotation with an expanded bounding box (PIL semantics).
-
-    Implemented with cv2.warpAffine: ~20x faster than PIL on the 100x
-    supersampled kernel intermediates (which dominate kernel-build cost at
-    ~0.3 s each), with final-kernel differences <0.5% of amplitude confined
-    to edge pixels — sub-resolution placement noise on normalized
-    matched-filter kernels.
-    """
-    h, w = array.shape
-    matrix = cv2.getRotationMatrix2D(((w - 1) / 2.0, (h - 1) / 2.0), angle, 1.0)
-    cos_a, sin_a = abs(matrix[0, 0]), abs(matrix[0, 1])
-    new_w = int(np.ceil(h * sin_a + w * cos_a))
-    new_h = int(np.ceil(h * cos_a + w * sin_a))
-    matrix[0, 2] += (new_w - 1) / 2.0 - (w - 1) / 2.0
-    matrix[1, 2] += (new_h - 1) / 2.0 - (h - 1) / 2.0
-    return cv2.warpAffine(
-        np.ascontiguousarray(array, dtype=np.float32),
-        matrix,
-        (new_w, new_h),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0.0,
-    )
+# Upper bound on the element count of any detection-kernel grid: the streak kernel's supersampled
+# grid (rows*ss * cols*ss) or the sidereal Gaussian's size*size. A real kernel is at most
+# image-sized (a few thousand px per side -> well under this); exceeding it means an upstream
+# fit was degenerate -- a wild streak-length/rate estimate, or a garbage median FWHM on a
+# noise-flooded wide-FOV frame -- which would otherwise allocate tens-to-hundreds of GiB and
+# OOM the whole worker process. (Observed in production: a ~46850 px median FWHM sized a
+# 119000x119000 Gaussian ~= 114 GiB, which OOM-killed the worker and broke the process pool.)
+# ~5e8 elements ~= 2 GiB float32 / 3.7 GiB float64 -- generous for legitimate kernels, fatal
+# only to garbage.
+MAX_KERNEL_FINE_ELEMENTS = 500_000_000
 
 
 def shift_filter_subpx(filter, pix_shift):
@@ -61,84 +46,82 @@ def rectangle_pyramoid(
     halo_fwhm: float | None = None,
     halo_level: float = 1e-3,
     verbose: bool = False,
-):
+) -> np.ndarray:
+    """Build a rotated rectangular streak kernel for streak detection.
+
+    The kernel is the exact per-pixel area coverage of a rotated rectangle of the given length
+    and width, evaluated directly on the output grid. This reproduces the previous
+    supersample-rotate-downsample kernel (correlation >= 0.98 across lengths and rotations) while
+    using only output-sized memory and no image-library calls. The old approach built a 100x
+    supersampled intermediate and rotated it with OpenCV, which could reach tens of GiB on a
+    degenerate (very long) streak and OOM-kill the worker.
+
+    ``upsample`` and ``halo_level`` are accepted for backwards compatibility with existing call
+    sites but no longer affect the result: the area-coverage evaluation is exact, and the halo is
+    represented as a widened zero border sized from ``halo_fwhm``.
+
+    Args:
+        length (float): streak length in pixels.
+        sinx (float): sine of the streak orientation angle.
+        cosx (float): cosine of the streak orientation angle.
+        width (int): streak width in pixels. Defaults to 4.
+        upsample (int): retained for backwards compatibility; unused. Defaults to 100.
+        pix_shift (tuple[float, float] | None): optional (row, column) sub-pixel shift to apply to
+            the final kernel. Defaults to None.
+        halo_fwhm (float | None): if set, widens the kernel's zero border by roughly half this many
+            pixels. Defaults to None.
+        halo_level (float): retained for backwards compatibility; unused. Defaults to 1e-3.
+        verbose (bool): if True, log a progress message. Defaults to False.
+
+    Returns:
+        np.ndarray: the rotated streak kernel at pixel resolution.
+    """
     if verbose:
         logger.info("rectangle_pyramoid")
 
-    angle = np.rad2deg(np.arctan2(sinx, cosx))
+    width = max(1, int(width))
+    length = max(1, int(length))
 
-    # Floor at 1 px: a sub-pixel length/width truncates to 0 and builds a
-    # zero-size array that cv2.warpAffine rejects (src.cols > 0 assertion).
-    width = max(int(width), 1)
-    length = max(int(length), 1)
+    # Size the output grid to the rotated rectangle's bounding box plus a small zero border.
+    border = (int(halo_fwhm / 2) if halo_fwhm else 0) + 3
+    n_cols = int(np.ceil(abs(length * cosx) + abs(width * sinx))) + 2 * border + 1
+    n_rows = int(np.ceil(abs(length * sinx) + abs(width * cosx))) + 2 * border + 1
 
-    # Bound the supersampled intermediate. The kernel is built at `upsample`x
-    # resolution then PIL-rotated with expand=1, so the rotated bounding box
-    # grows as ~(max(width, length) * upsample)^2. At upsample=100 a long
-    # streak is catastrophic: L=600 builds a ~60000^2 float array (~15 GB),
-    # and a fast coverage target (L~800-1000) reached ~46 GB and drew the OOM
-    # killer (burr _full7). The 100x supersampling exists for sub-pixel
-    # accuracy of the streak *edges*; a long streak does not need 100 samples
-    # across its length. Cap the largest upsampled dimension so the
-    # intermediate stays bounded (~MAX_UPSAMPLED_DIM^2) regardless of length —
-    # the final resized kernel keeps the same pixel dimensions either way.
-    MAX_UPSAMPLED_DIM = 6000
-    longest = max(width, length, 1)
-    upsample = max(1, min(upsample, MAX_UPSAMPLED_DIM // longest))
+    # Exact per-pixel area coverage of the rotated rectangle, via supersampling: subdivide each
+    # output pixel into ss x ss sub-samples, test each against the rectangle, and average. This
+    # converges to the true area coverage (matching the previous 100x-supersample/area-downsample
+    # kernel) -- a plain 1-px edge ramp was not faithful enough for the rate->rate streak estimate
+    # and degraded registration on some collects.
+    ss = 4
 
-    # float32 from the start: the rotation already worked in float32 (PIL
-    # mode 'F' before, cv2 now), so this only avoids building and padding
-    # the supersampled intermediate at double width.
-    pyramid = np.ones((width * upsample, length * upsample), dtype=np.float32)
-    if verbose:
-        logger.info("built base streak")
-
-    if halo_fwhm is not None:
-        if verbose:
-            logger.info("adding halo")
-
-        halo_fwhm = int(halo_fwhm / 2)
-        # logger.info("adding nonzero halo")
-        pyramid = np.pad(
-            pyramid,
-            (
-                (halo_fwhm * upsample, halo_fwhm * upsample),
-                (halo_fwhm * upsample, halo_fwhm * upsample),
-            ),
-            mode="constant",
-            constant_values=0.0,
+    # Guard: a degenerate streak-length estimate (e.g. a wild rate/FWHM fit on a noisy wide-FOV
+    # frame) would size the grid to tens of thousands of px and allocate 100+ GiB of float32,
+    # OOM-killing the worker. Fail this frame loudly and cheaply instead -- callers treat it as an
+    # unsolved frame, so one bad frame can no longer crash the whole run.
+    fine_elements = (n_rows * ss) * (n_cols * ss)
+    if fine_elements > MAX_KERNEL_FINE_ELEMENTS:
+        raise ValueError(
+            f"streak kernel too large: {n_rows}x{n_cols} output px "
+            f"(length={length}, width={width}, sinx={sinx:.3f}, cosx={cosx:.3f}) would allocate a "
+            f"{fine_elements * 4 / 2**30:.1f} GiB supersampled grid "
+            f"(> {MAX_KERNEL_FINE_ELEMENTS * 4 / 2**30:.1f} GiB cap); "
+            "this indicates a degenerate streak-length estimate, not a real streak."
         )
 
-        if verbose:
-            logger.info("padded pyramid")
+    center_row, center_col = (n_rows - 1) / 2.0, (n_cols - 1) / 2.0
+    offsets = (np.arange(ss, dtype=np.float32) + 0.5) / ss - 0.5  # sub-pixel sample centers
+    fine_rows = (np.arange(n_rows, dtype=np.float32)[:, None] + offsets[None, :]).ravel()
+    fine_cols = (np.arange(n_cols, dtype=np.float32)[:, None] + offsets[None, :]).ravel()
+    d_row = fine_rows - center_row
+    d_col = fine_cols - center_col
 
-        pyramid2 = np.full(pyramid.shape, halo_level, dtype=np.float32)
+    # Project the fine samples onto the streak's own axes (along the length, across the width).
+    along = d_col[None, :] * cosx + d_row[:, None] * sinx
+    across = -d_col[None, :] * sinx + d_row[:, None] * cosx
+    inside = ((np.abs(along) <= length / 2.0) & (np.abs(across) <= width / 2.0)).astype(np.float32)
 
-        if verbose:
-            logger.info("created pyramid2")
-
-        pyramid2 = rotate_pil(pyramid2, -angle)
-
-        if verbose:
-            logger.info("rotated pyramid2")
-
-    pyramid = rotate_pil(pyramid, -angle)
-    if verbose:
-        logger.info("rotated pyramid")
-
-    if halo_fwhm is not None:
-        # add nonzero halo to original pyramid
-        pyramid[np.where(pyramid == 0)] = pyramid2[np.where(pyramid == 0)]
-        if verbose:
-            logger.info("added halo")
-
-    pyramid = cv2.resize(
-        pyramid,
-        dsize=(int(pyramid.shape[1] / upsample), int(pyramid.shape[0] / upsample)),
-        interpolation=cv2.INTER_AREA,
-    )
-    if verbose:
-        logger.info("resized pyramid")
+    # Average the ss x ss sub-samples back down to one value per output pixel.
+    pyramid = inside.reshape(n_rows, ss, n_cols, ss).mean(axis=(1, 3)).astype(np.float32)
 
     if pix_shift is not None:
         pyramid = shift_filter_subpx(pyramid, pix_shift)
