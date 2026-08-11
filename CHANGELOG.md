@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.6.2] - 2026-08-11
+
+Release infrastructure only — no library code changed.
+
+2.6.1 was tagged and released on GitHub but never reached PyPI: the publish
+workflow below had not been merged yet, so nothing fired. PyPI therefore goes
+from 2.6.0 straight to 2.6.2, and this release carries the 2.6.1 stability
+fixes listed below to PyPI for the first time.
+
+### Added
+
+- **Automated PyPI publishing** (`.github/workflows/python-publish.yml`) via
+  Trusted Publishing (OIDC), so no API token is stored. It triggers only when a
+  GitHub Release is published — never on a merge, and never for draft or
+  prerelease releases — and pauses for manual approval on the `pypi`
+  environment before uploading. Before releasing it verifies the release tag
+  matches `pyproject.toml`, that the version is not already on PyPI, and that
+  lint, the CI test subset, the artifact filenames, and `twine check` all pass.
+  Setup and procedure are documented in `docs/RELEASING.md`.
+- **A packaging check in CI** so a broken build or bad metadata surfaces on a
+  pull request rather than mid-release, when the GitHub Release is already
+  public.
+
+### Changed
+
+- CI also runs on `dev`, not only `main`.
+
 ## [2.6.1] - 2026-07-27
 
 ### Fixed
