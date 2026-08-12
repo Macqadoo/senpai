@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 import numpy as np
 from astropy.wcs import WCS
 
-import senpai.catalog.sstr7 as sstr7
+from senpai.catalog import sstrc7_source as sstr7
 import senpai.catalog.sdss as sdss
 import senpai.catalog.gaia as gaia
 from senpai.catalog.constants import CatalogType
@@ -972,14 +972,11 @@ def _examine_gaia_local_catalog(catalog_path: str) -> bool:
 
 def _examine_sstrc7_catalog(catalog_path: str) -> bool:
     """Validate SSTRC7 catalog by checking path and key files."""
-    from senpai.catalog.sstrc7_management import examine_sstrc7_by_path_and_structure
-    from senpai.catalog.constants import SSTR7_EXPECTED_FILES
-
     if not catalog_path:
         logger.error("SSTRC7 catalog path not configured")
         return False
 
-    return examine_sstrc7_by_path_and_structure(catalog_path, SSTR7_EXPECTED_FILES)
+    return sstr7.examine_catalog(catalog_path)
 
 
 def _examine_sdss_catalog() -> bool:
@@ -1031,7 +1028,7 @@ def enforce_catalog():
         if catalog_type == "sstrc7" and catalog_path:
             raise RuntimeError(
                 f"Catalog {catalog_type} is missing or incomplete. "
-                f"Run: python -m senpai.catalog.sstrc7_management download --catalog_path {catalog_path}"
+                f"Run: python -m sstrc7 get --path {catalog_path}"
             )
         else:
             raise RuntimeError(f"Catalog {catalog_type} is missing or incomplete")

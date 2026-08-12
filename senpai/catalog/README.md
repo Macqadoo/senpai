@@ -104,12 +104,18 @@ All catalog queries return stars in a standardized format:
 
 ## SSTRC7 Local Catalog Setup
 
-For SSTRC7, you need to download and set up the local catalog files:
+SSTRC7 reads from local files, supplied by the [`sstrc7`](https://pypi.org/project/sstrc7/)
+package (a senpai dependency, so it is already installed).
 
-1. **Download**: Obtain SSTRC7 catalog files from appropriate astronomical data archives
-2. **Organization**: Place files in a directory structure expected by the module
-3. **Configuration**: Set the `catalog.sstrc7.path` in your config file
-4. **Indexing**: The module will automatically index and cache catalog queries for performance
+1. **Download**: `python -m sstrc7 get --path /path/to/sstrc7`. The full sky is
+   7.2 GB to download and 17.6 GB on disk; `--dec-range` fetches only the
+   declination zones you need. Files are checksummed, and re-running fetches
+   only what is missing.
+2. **Configuration**: set `catalog.path` in your config file. If you leave it
+   unset, the package resolves `$SSTRC7_PATH` and then `~/.sstrc7`.
+3. **Verification**: senpai checks the catalog is complete at startup and tells
+   you the download command if it is not.
+4. **Indexing**: queries are indexed and cached automatically for performance.
 
 ## Performance Considerations
 
