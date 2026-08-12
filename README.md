@@ -4,7 +4,7 @@
 
 A classic star detector and astrometry tool.
 
-<img src="https://raw.githubusercontent.com/ssc-ai/senpai/main/resources/senpai_logo.png" alt="senpai" width="600"/>
+<img src="https://raw.githubusercontent.com/ssc-ai/senpai/main/docs/senpai_logo.png" alt="senpai" width="600"/>
 
 SENPAI is built off of the algorithm descriptions in [Gazak et al. 2026, PASP, 138, 014502](https://iopscience.iop.org/article/10.1088/1538-3873/ae2b35/meta) — see [Citation](#citation) below if you use this software.
 
@@ -52,7 +52,7 @@ source .venv/bin/activate
 
 ## Run SENPAI
 
-When you run the SENPAI api, it loads a config file, which you can specify on command line (or use default resources/config/local.yaml)
+When you run the SENPAI api, it loads a config file, which you can specify on command line (or use default senpai/resources/config/local.yaml)
 
 
 ## Run SENPAI CLI
@@ -73,10 +73,14 @@ python -m senpai.cli.single --image <your_fits_file> --output_dir <your_output_d
 
 ## Run SENPAI API
 
-When you run the SENPAI api, it loads a config file, which you can specify on command line (or use default resources/config/local.yaml)
+When you run the SENPAI api, it loads a config file, which you can specify on command line (or use default senpai/resources/config/local.yaml)
 
-- the default config is resources/config/local.yaml
+- the default config is senpai/resources/config/local.yaml
 - on startup, SENPAI will check for downloaded indices files
+
+Cache and log files are written outside the install tree, under
+`$XDG_CACHE_HOME/senpai` (or `~/.cache/senpai`). Override with `SENPAI_CACHE_DIR`
+and `SENPAI_LOG_DIR` — useful in containers, where `$HOME` may not be writable.
 
 
 ### local SENPAI API
@@ -88,7 +92,7 @@ make run
 or 
 
 ```sh
-uv run python -m senpai.api.main --config resources/config/local.yaml
+uv run python -m senpai.api.main --config senpai/resources/config/local.yaml
 ```
 
 
@@ -107,7 +111,7 @@ docker build --build-arg BASE_IMAGE=<your-custom-base-image> -t senpai .
 
 #### run container
 
-- **config** this container builds with resources/local/containerize.yaml
+- **config** this container builds with senpai/resources/config/containerized.yaml
 - **port** runs on 8000 in container
 
 Run like this, noting that **target** is the path to your indices in the container, and must match your config file (containerized.yaml by default).
