@@ -28,7 +28,7 @@ from senpai.core.config import (
     load_yaml,
 )
 
-CONFIG_DIR = Path(__file__).resolve().parents[3] / "resources" / "config"
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "resources" / "config"
 
 # AppConfig's astrometry/plotting sub-configs have required fields (no usable
 # default_factory), so a bare AppConfig(version=...) fails. This is the minimal

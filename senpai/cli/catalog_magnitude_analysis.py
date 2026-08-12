@@ -254,7 +254,7 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default=LOCAL_APP_CONFIG_OVERRIDE or "resources/config/local.yaml",
+        default=LOCAL_APP_CONFIG_OVERRIDE,
         help="Path to config file",
     )
     parser.add_argument(

@@ -61,3 +61,19 @@ jobs:
         run: uv build
       - name: Check distribution metadata
         run: uvx twine check dist/*
+
+      - name: Construct the app from the installed wheel
+        # Issue #6: create_app() worked in an editable checkout and raised on
+        # every real install, because shipped code read files that live outside
+        # the `senpai/` package a wheel ships. Only a non-editable install
+        # catches that. Run from /tmp so the checkout's senpai/ cannot shadow
+        # the installed package.
+        run: |
+          uv venv /tmp/wheel-check
+          uv pip install --python /tmp/wheel-check/bin/python dist/*.whl
+          cd /tmp
+          /tmp/wheel-check/bin/python -c "
+          from senpai.api.main import create_app
+          create_app().openapi()
+          print('installed wheel constructs the app and its OpenAPI schema')
+          "

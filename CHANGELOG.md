@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.3] - 2026-08-11
+
+### Fixed
+
+- **`create_app()` crashed on every non-editable install**
+  ([#6](https://github.com/ssc-ai/senpai/issues/6)). Paths in
+  `senpai/core/constants.py` were anchored at the repo root, but a wheel ships
+  `senpai/` alone — so on a normal `pip`/`uv` install they resolved into
+  `site-packages/`, where neither `resources/` nor `tests/` exists. Two
+  independent failures followed: the default config `resources/config/local.yaml`
+  was unreadable (leaving `AppConfig` to fail validation on 8 missing fields),
+  and the OpenAPI example for `/astrometry/solve/sources` raised
+  `FileNotFoundError` loading a repo test fixture at import time. Both are gone;
+  CI now builds a wheel, installs it into a clean environment, and constructs
+  the app, which is the only way this class of bug is visible.
+
+### Changed
+
+- **`resources/` now lives inside the package**, at `senpai/resources/`, so it
+  ships in the wheel and resolves identically in a checkout and when installed.
+  `RESOURCES_DIR`, `CONFIG_DIR`, `ASSETS_DIR`, `DATA_DIR`, `APP_DIR` and the
+  config-override constants are anchored at the package; `TEST_DATA_DIR` is
+  anchored at the new `REPO_ROOT` and is for tests only. `BASE_DIR` remains as
+  a deprecated alias of `REPO_ROOT`. In-repo paths change accordingly (e.g.
+  `senpai/resources/config/local.yaml`).
+- **Cache and log files no longer land in the install tree.** `CACHE_DIR`
+  defaults to `$XDG_CACHE_HOME/senpai` (else `~/.cache/senpai`) and logs to
+  `CACHE_DIR/logs/app.log`, each overridable with `SENPAI_CACHE_DIR` and
+  `SENPAI_LOG_DIR`. Previously both were written under the package —
+  `constants.py` even created the log directory as an import side effect, which
+  fails outright on a read-only filesystem. That import-time `mkdir` is gone;
+  `setup_logging()` still creates the directory it needs.
+- The OpenAPI example for `/astrometry/solve/sources` is now a 10-detection
+  literal instead of a 100-row fixture read from disk. It is illustrative
+  rather than a solvable field, and renders usefully in `/docs`.
+
 ## [2.6.2] - 2026-08-11
 
 Release infrastructure only — no library code changed.
