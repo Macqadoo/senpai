@@ -67,7 +67,7 @@ RUN find /home/${USER_NAME}/ -type f -exec chmod u+rw,o+r {} +
 # Install SENPAI dependencies and SENPAI itself
 RUN pip3 install uv
 RUN mkdir -p /app/resources/config
-COPY resources/config/containerized.yaml /app/resources/config/
+COPY senpai/resources/config/containerized.yaml /app/resources/config/
 
 # Copy the entire repository into the container
 COPY --chown=${USER_NAME}:${GROUP_NAME} . ${HOME}/senpai
