@@ -34,7 +34,7 @@ logging.getLogger("matplotlib.ticker").setLevel(logging.WARNING)
 logging.getLogger("matplotlib.colorbar").setLevel(logging.WARNING)
 logging.getLogger("matplotlib.pyplot").setLevel(logging.WARNING)
 
-import senpai.catalog.sstr7 as sstr7  # noqa: E402
+from senpai.catalog import sstrc7_source as sstr7  # noqa: E402
 from senpai.core.config import initialize_config  # noqa: E402
 from senpai.core.constants import LOCAL_APP_CONFIG_OVERRIDE  # noqa: E402
 from senpai.core.logging import set_log_level  # noqa: E402
