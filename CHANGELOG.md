@@ -6,7 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [2.7.0] - 2026-08-11
+## [2.6.5] - 2026-08-13
+
+### Fixed
+
+- **Shift-validation control draws are seeded.** `validate_shift_lightweight`
+  scores a proposed chain shift against `n_random_trials` random control shifts
+  and accepts only if the proposal beats them by `min_correlation_ratio`. Those
+  controls came from the global unseeded `np.random`, so every run sampled a
+  different null distribution and a marginal shift passed in one run and failed
+  in the next; the frame's WCS then flipped solved/unsolved and the chain
+  carried the difference downstream. Measured on calsat-cert, 2.6.0 against a
+  second run of itself: 73 of 2211 frames (3.3%) and 36 of 230 observations
+  (15.7%) changed with no code change at all. The generator is now seeded from
+  the frame pair, the trial number and the proposed shift, so distinct shifts
+  still draw independent nulls while any given shift always sees the same one.
+
 
 ### Fixed
 
