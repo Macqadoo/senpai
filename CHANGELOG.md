@@ -6,6 +6,45 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-08-11
+
+### Fixed
+
+- **Proper motion was 9.77x too large.** SSTRC7 stores proper motion in units of
+  0.32 mas/yr per count, so decoding multiplies by 0.32; the vendored reader
+  divided instead (`(1 / 0.32) * mas2rad / year2sec`), overstating every proper
+  motion by exactly 1 / 0.32**2 = 9.7656. Right ascension carried a further
+  spurious `cos(dec)` applied to a value that is already a coordinate proper
+  motion. Only queries passing `proper_motion_date` were affected, but there the
+  error was large: a star moving 60 mas/yr, propagated 25 years, was displaced
+  14.6 arcsec instead of 1.5. Measured against the catalog at four fields from
+  dec -60 to +80; the ratio is 9.7656 at every one.
+
+### Changed
+
+- **SSTRC7 catalog reads now come from the [`sstrc7`](https://pypi.org/project/sstrc7/)
+  package** rather than a vendored reader. It reads the same 1801 files from the
+  same directory, so existing local catalogs and `catalog.path` settings work
+  unchanged. Star records keep senpai's cross-catalog dict shape, and positions,
+  magnitudes and provenance strings are identical to 2.6.x -- verified star by
+  star against the old reader on real catalog data (positions to 1e-12 rad, all
+  18 bands to 1e-9 mag). Magnitudes are rounded to the catalog's integer-millimag
+  storage quantum rather than carrying float32 residue.
+- **The catalog downloader works again.** `SSTR7_GITHUB_REPO` had been blanked
+  pending re-hosting, so `sstrc7_management.py` could not fetch anything; the
+  package hosts the catalog at `ssc-ai/sstrc7` and adds partial fetches by
+  declination zone, SHA-256 verification, and resumable downloads. Use
+  `python -m sstrc7 get --path <dir>`; senpai points at it when the catalog is
+  incomplete at startup.
+
+### Removed
+
+- `senpai/catalog/sstr7.py` and `senpai/catalog/sstrc7_management.py`, plus the
+  file-size and checksum tables in `senpai/catalog/constants.py` -- about 3400
+  lines, now maintained upstream. `SSTR7_EXPECTED_FILES`,
+  `SSTR7_EXPECTED_CHECKSUMS`, `SSTR7_GITHUB_REPO` and `SSTR7_RELEASE_TAG` are
+  gone with them; `CatalogType`, `SSTRC7Filter` and the other enums are unchanged.
+
 ## [2.6.3] - 2026-08-11
 
 ### Fixed
