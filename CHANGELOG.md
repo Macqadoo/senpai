@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-08-14
+
+### Added
+
+- **`astrometry.pipeline_mode`** trims the sidereal pipeline for callers that
+  only need a fast per-frame FWHM (e.g. autofocus sweeps). `detect_solve` runs
+  detection + plate solve then stops — the frame keeps its WCS and plate scale
+  (via `wcs_metadata`) but reports `fit=False`, skipping WCS refinement, the
+  catalog query, catalog FWHM, and photometry. `detect` runs point-source
+  detection only, no solve. Both report the detection-stage FWHM in
+  `detection_metadata.pixel_fwhm` / `fwhm_stats` and leave `starfield.fit`
+  False, which is what keeps every downstream collect pass skipped. Settable in
+  config or overridden per call, so one process can interleave reduced-mode
+  sweeps with full science batches without mutating global config. `full` (the
+  default) is unchanged.
+- Rate-track point detections are tagged with `detection_type="point"`.
+
 ## [2.7.0] - 2026-08-13
 
 ### Fixed

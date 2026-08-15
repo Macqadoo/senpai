@@ -916,6 +916,7 @@ def extract_point_sources(frame: RateTrackFrame) -> SatelliteListImage:
             dec=dec,
             snr=float(snr),
             pixel_fwhm=float(pixel_fwhm),
+            detection_type="point",
         )
 
         if config.detection.snr_threshold and star.snr > config.detection.snr_threshold:

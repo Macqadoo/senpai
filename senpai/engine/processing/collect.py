@@ -3,6 +3,7 @@
 import logging
 import time
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -35,6 +36,7 @@ def process_senpai_collect(
     file_list: list[ProcessedFitsImage],
     id: str = "senpai",
     force_track_mode: TrackMode | None = None,
+    pipeline_mode: Literal["full", "detect_solve", "detect"] | None = None,
 ) -> SenpaiRun:
     """Process a senpai collect, returning freed heap to the OS afterward.
 
@@ -43,7 +45,7 @@ def process_senpai_collect(
     requests. See :func:`senpai.engine.utils.memory.reclaim_process_memory`.
     """
     try:
-        return _process_senpai_collect(file_list, id, force_track_mode)
+        return _process_senpai_collect(file_list, id, force_track_mode, pipeline_mode)
     finally:
         reclaim_process_memory()
 
@@ -52,9 +54,16 @@ def _process_senpai_collect(
     file_list: list[ProcessedFitsImage],
     collect_id: str = "senpai",
     force_track_mode: TrackMode | None = None,
+    pipeline_mode: Literal["full", "detect_solve", "detect"] | None = None,
 ) -> SenpaiRun:
     t_start = time.time()
     config = get_config()
+    # Per-call override of `astrometry.pipeline_mode`, resolved once and used everywhere
+    # below in place of the config field. This is what lets a single process run reduced-mode
+    # batches (an autofocus focus sweep) and full science batches interchangeably: the choice
+    # travels with the call instead of living in global config. Omitting it reproduces the
+    # configured behaviour exactly.
+    pipeline_mode = pipeline_mode or config.astrometry.pipeline_mode
 
     # Apply preprocessing to all frames before organizing
     from senpai.engine.utils.preprocessing import preprocess_image
@@ -90,7 +99,9 @@ def _process_senpai_collect(
 
     valid_sidereal_frame = False
     for image_frame in senpai_run.sidereal_frames:
-        sidereal_wcs_starfield = process_astrometry_fits_sidereal(image_frame.frame)
+        sidereal_wcs_starfield = process_astrometry_fits_sidereal(
+            image_frame.frame, pipeline_mode=pipeline_mode
+        )
 
         # Stop processing once we have a valid solution
         if sidereal_wcs_starfield.fit:
@@ -173,7 +184,7 @@ def _process_senpai_collect(
 
                     # Re-run astrometry on the scaled frame
                     sidereal_wcs_starfield = process_astrometry_fits_sidereal(
-                        image_frame.frame
+                        image_frame.frame, pipeline_mode=pipeline_mode
                     )
                     # The scale_factor is now stored at the run level, so we don't need to preserve it in individual starfields
                     image_frame.starfield = sidereal_wcs_starfield
@@ -239,6 +250,49 @@ def _process_senpai_collect(
                 )
 
             break
+
+        else:
+            # No astrometric solution: retain the starfield anyway so its detection-stage
+            # FWHM (detection_metadata.pixel_fwhm, measured before the solve) still reaches
+            # the results for sparse fields / autofocus. Downstream photometry that needs a
+            # catalog stays gated on `.fit`, so this only surfaces the solve-independent FWHM.
+            if image_frame.starfield is None:
+                image_frame.starfield = sidereal_wcs_starfield
+
+    if pipeline_mode != "full":
+        # Reduced pipeline_modes end here, successfully. Every sidereal frame carries its
+        # own detection-stage FWHM, and starfield.fit is False by design, so the WCS chain
+        # and the .fit-gated catalog/photometry passes below have nothing left to do.
+        # Returning here is also what keeps the run out of the "No valid WCS solution
+        # found" error state that fit=False would otherwise fall into.
+        for image_frame in senpai_run.sidereal_frames:
+            if image_frame.starfield and image_frame.starfield.fwhm_stats:
+                # Per-frame, and deliberately NOT propagated across frames the way the
+                # solved path does: a focus sweep is precisely a set of frames whose
+                # FWHM differs, so sharing one frame's seeing would erase the signal.
+                image_frame.seeing = SeeingModel.from_fwhm_stats(
+                    image_frame.starfield.fwhm_stats
+                )
+
+        if senpai_run.rate_track_frames:
+            logger.warning(
+                "pipeline_mode=%s covers sidereal frames only; %d rate-track frame(s) "
+                "left unprocessed",
+                pipeline_mode,
+                len(senpai_run.rate_track_frames),
+            )
+
+        senpai_run.completed = True
+        senpai_run.error_message = None
+        senpai_run.compute_seconds = round(time.time() - t_start, 2)
+        logger.info(
+            "pipeline_mode=%s: %d sidereal frame(s) processed in %s seconds "
+            "(detection FWHM only, no WCS chain/catalog/photometry)",
+            pipeline_mode,
+            len(senpai_run.sidereal_frames),
+            senpai_run.compute_seconds,
+        )
+        return senpai_run
 
     if not valid_sidereal_frame and senpai_run.rate_track_frames:
         # Rate-only input — try WCS from first rate frame's streak centroids

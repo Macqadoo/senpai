@@ -73,6 +73,19 @@ class FastSolveConfig(BaseModel):
 class AstrometryConfig(BaseModel):
     """Astrometry(.net) configuration"""
 
+    pipeline_mode: Literal["full", "detect_solve", "detect"] = Field(
+        default="full",
+        description="How much of the sidereal pipeline to run. 'full' = detect -> solve -> "
+        "refine -> catalog -> catalog FWHM, followed by the downstream collect passes "
+        "(the default; unchanged behavior). 'detect_solve' = detect + plate solve, then "
+        "stop: the frame keeps a WCS (and so a plate scale, via wcs_metadata) but skips "
+        "WCS refinement, the catalog query, catalog FWHM, and photometry. 'detect' = "
+        "point-source detection only, no solve attempted. Both reduced modes report the "
+        "detection-stage FWHM in detection_metadata.pixel_fwhm and fwhm_stats, and leave "
+        "starfield.fit False -- which is what keeps every downstream collect pass skipped. "
+        "Intended for a dedicated SENPAI instance that only needs fast per-frame FWHM "
+        "(e.g. autofocus sweeps); reduced modes cover sidereal frames only.",
+    )
     solver_mode: Literal["dotnet", "tetra3", "chain"] = Field(
         default="dotnet",
         description="Plate-solve engine: 'dotnet' = astrometry.net via astroeasy (the original "
