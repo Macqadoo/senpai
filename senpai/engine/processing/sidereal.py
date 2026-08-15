@@ -9,6 +9,7 @@ collect pipeline (``senpai.engine.processing.collect``).
 """
 
 import logging
+from typing import Literal
 
 from senpai.astrometry import solve_field
 from senpai.catalog.runner import query_catalog
@@ -40,14 +41,28 @@ def process_astrometry_json_sidereal(
 
 def process_astrometry_fits_sidereal(
     fits_image,
+    pipeline_mode: Literal["full", "detect_solve", "detect"] | None = None,
 ) -> StarField:
     """Process a sidereal frame: detect sources, solve astrometry, query catalog, measure FWHM.
 
     Returns a StarField with solved WCS, catalog stars, detection metadata, and FWHM stats.
     Photometry, plotting, and file I/O are NOT performed here — the collect pipeline
     handles those downstream.
+
+    ``pipeline_mode`` trims the work for callers that only need a per-frame FWHM:
+    ``'detect_solve'`` stops after the plate solve, and ``'detect'`` never attempts
+    one. Both land in the same ``else:`` fallback below that a failed solve uses
+    today, so the returned shape (detection FWHM in ``detection_metadata`` and a
+    synthesized ``fwhm_stats``) is identical — reached on purpose rather than by
+    failure. See ``AstrometryConfig.pipeline_mode``.
+
+    Passing it explicitly overrides the configured mode FOR THIS CALL ONLY, so one
+    process can run reduced-mode batches (an autofocus focus sweep) alongside full
+    science batches without mutating global config. Omit it — the default — to use
+    ``config.astrometry.pipeline_mode`` exactly as before.
     """
     config = get_config()
+    pipeline_mode = pipeline_mode or config.astrometry.pipeline_mode
 
     sources, initial_fwhm = extract_point_sources(
         fits_image, max_detections=config.astrometry.max_sources
@@ -60,11 +75,25 @@ def process_astrometry_fits_sidereal(
     sources.image_metadata.boresight_ra = boresight_ra_degrees
     sources.image_metadata.boresight_dec = boresight_dec_degrees
 
-    wcs_starfield = solve_field(sources)
+    if pipeline_mode == "detect":
+        wcs_starfield = StarField(
+            wcs=None,
+            detections=sources.detections,
+            image_metadata=sources.image_metadata,
+        )
+    else:
+        wcs_starfield = solve_field(sources)
+
+        if pipeline_mode == "detect_solve":
+            # Keep the WCS — StarField's validator derives wcs_metadata from it, so
+            # consumers still get a plate scale — but report fit=False. The fit was
+            # never refined or checked against a catalog, and every downstream pass in
+            # the collect pipeline gates on `.fit`, which is what keeps this mode cheap.
+            wcs_starfield.fit = False
 
     wcs_starfield.detection_metadata = DetectionMetadata(pixel_fwhm=initial_fwhm)
 
-    if wcs_starfield.wcs:
+    if wcs_starfield.wcs and pipeline_mode == "full":
         # Create a SiderealFrame to pass to refine_sidereal_frame. A header-sparse
         # frame (no date) keeps a None timestamp rather than crashing refinement.
         try:
@@ -120,7 +149,8 @@ def process_astrometry_fits_sidereal(
         median_fwhm = fwhm_stats.median_fwhm
 
     else:
-        # Fallback if no WCS solution
+        # Fallback if no WCS solution — also the deliberate landing point for the
+        # reduced pipeline_modes, which skip the catalog-based FWHM measurement.
         median_fwhm = initial_fwhm
         fwhm_stats = FWHMMetadata(
             n_measurements=1,
