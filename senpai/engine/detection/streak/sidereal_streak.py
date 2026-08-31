@@ -217,7 +217,18 @@ def _characterize_component(
     # A real streak is a PSF smeared along one axis.  Its perpendicular
     # width MUST be consistent with the seeing FWHM.  Too narrow = noise
     # artifact on a pixel grid.  Too wide = not a streak.
-    if width < fwhm * 0.3 or width > fwhm * 2.5:
+    #
+    # Floor is 0.6*fwhm, not 0.3: at a 3.52 px PSF that was 1.06 px, which a
+    # single hot pixel (PCA minor-axis ~1.0-1.1 px) clears.
+    if width < fwhm * 0.6 or width > fwhm * 2.5:
+        return None
+
+    # Flux must be distributed across the component, not concentrated in one
+    # pixel — the width test alone lets a lone hot pixel through.
+    component_vals = image[component_mask].astype(float)
+    positive = np.clip(component_vals - np.median(component_vals), 0, None)
+    total_flux = float(positive.sum())
+    if total_flux > 0 and float(positive.max()) / total_flux > 0.5:
         return None
 
     # Best angle: weighted circular mean over the component pixels
@@ -393,9 +404,16 @@ def _refine_streak_from_image(
     # _characterize_component): a real streak is the PSF smeared along one
     # axis.  Far too narrow = pixel-grid noise artifact; far too wide =
     # glare gradient or halo, not a streak.
-    if fitted_fwhm < 0.3 * fwhm or fitted_fwhm > 2.5 * fwhm:
+    #
+    # Floor is 0.8*fwhm, not 0.3.  A streak is the PSF smeared along one axis,
+    # so its cross-section cannot be narrower than the PSF; anything much
+    # below that is not a streak.  At 0.3 (1.06 px for a 3.52 px PSF) hot
+    # pixels cleared it by as little as 0.014 px, and edge glare -- whose
+    # perpendicular profile ramps toward the frame edge instead of peaking --
+    # fits a spuriously narrow 2.2 px.  The real target fitted 5.8 px.
+    if fitted_fwhm < 0.8 * fwhm or fitted_fwhm > 2.5 * fwhm:
         logger.debug(
-            "Rejected streak at (%.0f,%.0f): width=%.2f outside [0.3,2.5]*fwhm=%.2f",
+            "Rejected streak at (%.0f,%.0f): width=%.2f outside [0.8,2.5]*fwhm=%.2f",
             cx, cy, fitted_fwhm, fwhm,
         )
         return None
@@ -412,6 +430,20 @@ def _refine_streak_from_image(
         along_profile = map_coordinates(image, [ax_y[valid_a], ax_x[valid_a]], order=1)
         t_along_valid = t_along[valid_a]
         bg_level = np.median(along_profile)
+
+        # Flux must be distributed ALONG the streak, not concentrated in one
+        # sample.  The width test says nothing about the along-axis profile, so
+        # a lone hot pixel can satisfy it — those read median ~0 with a single
+        # 4000-6000 ADU spike, against median 143 for the real target.
+        along_pos = np.clip(along_profile - bg_level, 0, None)
+        along_total = float(along_pos.sum())
+        if along_total > 0 and float(along_pos.max()) / along_total > 0.5:
+            logger.debug(
+                "Rejected streak at (%.0f,%.0f): %.0f%% of along-axis flux in one "
+                "sample (hot pixel, not a streak)",
+                cx, cy, 100 * float(along_pos.max()) / along_total,
+            )
+            return None
         peak_idx = int(np.argmax(along_profile))
         peak_level = along_profile[peak_idx]
         half_max = bg_level + 0.5 * (peak_level - bg_level)
@@ -931,6 +963,7 @@ def detect_streaks_in_sidereal(
     exclude_angle_deg: float | None = None,
     exclude_length_pixels: float | None = None,
     exclude_angle_tol_deg: float = 15.0,
+    expected_length_pixels: float | None = None,
 ) -> tuple[list[StreakCandidate], np.ndarray, np.ndarray]:
     """Detect streak candidates in a sidereal frame.
 
@@ -959,6 +992,14 @@ def detect_streaks_in_sidereal(
             axis — before the expensive profile refinement.
         exclude_length_pixels: Star-trail length paired with
             ``exclude_angle_deg``.
+        expected_length_pixels: Length of the streak the tracked target should
+            make here, measured from the star trails on the rate frames.  In a
+            rate+sidereal collect the object being tracked moves at exactly the
+            rate the stars trailed at, so a trailed star IS the target's
+            signature — matching the filter to it is matched filtering in the
+            literal sense.  The default 5xFWHM bank is much shorter than a real
+            trail (17.6px against a measured 49px on a GEO set), which
+            under-integrates the signal and blunts angular selectivity.
         exclude_angle_tol_deg: Angle tolerance for the exclusion.
 
     Returns:
@@ -1023,6 +1064,35 @@ def detect_streaks_in_sidereal(
     directional_excess, best_angle_deg, isotropic = apply_directional_filters(
         filter_input, filter_fwhm, n_angles, filter_length_fwhm
     )
+
+    # Second pass matched to the trail the rate frames measured.  In a
+    # rate+sidereal collect the tracked object moves at exactly the rate the
+    # stars trailed at, so a trailed star is the target's signature, and the
+    # default 5xFWHM bank is far too short for it (17.6px against a measured
+    # 49px on a GEO set) — it under-integrates and blunts angular selectivity.
+    #
+    # This is ADDITIVE, not a retune: the general bank still runs at its own
+    # length over all angles, and we keep whichever response is stronger per
+    # pixel.  Anything the default bank would have found is still found; the
+    # matched pass only adds sensitivity to the tracked-rate signature.  It
+    # sweeps all angles too, so it is matched in length only, never pointed at
+    # one direction.
+    if expected_length_pixels is not None and expected_length_pixels > 0:
+        matched_length_fwhm = float(np.clip(expected_length_pixels / fwhm, 2.0, 30.0))
+        if abs(matched_length_fwhm - filter_length_fwhm) > 0.5:
+            de2, ba2, iso2 = apply_directional_filters(
+                filter_input, filter_fwhm, n_angles, matched_length_fwhm
+            )
+            better = de2 > directional_excess
+            directional_excess = np.where(better, de2, directional_excess)
+            best_angle_deg = np.where(better, ba2, best_angle_deg)
+            isotropic = np.where(better, iso2, isotropic)
+            logger.info(
+                "Rate-matched filter pass (length=%.1fxFWHM, %.1fpx from the rate "
+                "frames): stronger on %.1f%% of pixels, kept alongside the %.1fxFWHM bank",
+                matched_length_fwhm, expected_length_pixels,
+                100.0 * float(better.mean()), filter_length_fwhm,
+            )
 
     # Noise estimates (on the compact maps, before upsampling)
     _, _, excess_noise = sigma_clipped_stats(directional_excess, sigma=3.0, maxiters=5)
@@ -1197,11 +1267,17 @@ def detect_streaks_in_sidereal(
         # border zone (edge glare from bright sources just off-frame produces
         # strong directional gradients there).  Signal centered that close to
         # the edge cannot be validated; drop it.
+        # The margin also has to cover the streak's own extent: a streak that
+        # runs off the edge is truncated, so its centroid and length describe
+        # an arbitrary visible fraction of the object and its position is not
+        # measurable.  Applied isotropically rather than projected along the
+        # angle, because a truncated streak's angle is unreliable too.
+        edge_margin = max(border, 0.5 * candidate.length_pixels + 2.0 * fwhm)
         if (
-            candidate.x < border
-            or candidate.x >= image.shape[1] - border
-            or candidate.y < border
-            or candidate.y >= image.shape[0] - border
+            candidate.x < edge_margin
+            or candidate.x >= image.shape[1] - edge_margin
+            or candidate.y < edge_margin
+            or candidate.y >= image.shape[0] - edge_margin
         ):
             n_rejected_border += 1
             continue
@@ -1341,6 +1417,23 @@ def detect_streaks_in_sidereal(
         # streak exclusion on rate frames.
         if _is_excluded_star_streak(result):
             n_rejected_excluded += 1
+            continue
+        # Re-check the edge margin against the REFINED length.  The pre-trace
+        # check uses the seed length, which is shorter, so a streak running
+        # off the frame can clear it and only show its true extent here.
+        refined_margin = max(border, 0.5 * result.length_pixels + 2.0 * fwhm)
+        if (
+            result.x < refined_margin
+            or result.x >= image.shape[1] - refined_margin
+            or result.y < refined_margin
+            or result.y >= image.shape[0] - refined_margin
+        ):
+            logger.debug(
+                "Rejected streak at (%.0f,%.0f): refined length %.1fpx runs off "
+                "the frame edge, position not measurable",
+                result.x, result.y, result.length_pixels,
+            )
+            n_rejected_border += 1
             continue
         # Rate estimates were derived from the kernel-smeared traced length;
         # recompute from the refined length.

@@ -7,6 +7,7 @@ from senpai.core.config import get_config
 from senpai.engine.detection.streak.extraction import (
     cross_corr,
     extract_streak_dims_robust,
+    extract_streak_from_metadata,
     measure_streak_shift_centroid,
     prepare_rate_frame,
     prepare_sidereal_frame,
@@ -110,19 +111,43 @@ def solve_rate_from_sidereal(
             "Could not extract rate-frame streak, proceeding without masking"
         )
 
+    # Bound for the cross-correlation search: the measured streak if we have
+    # one, otherwise the commanded track rate from the headers.  Extraction is
+    # marginal (None on 2 of 6 rate frames in a GEO set), and an unbounded
+    # search locks onto the wrong peak — 6->5 returned the 6->4 displacement.
+    # Headers are a prior only, never truth: the shift is still validated
+    # below, so a wrong header just fails validation and retries.
+    geometry_streak = streak_measurements.frame_extraction
+    geometry_from_header = False
+    if geometry_streak is None:
+        try:
+            geometry_streak = extract_streak_from_metadata(
+                rate_frame.frame_metadata,
+                plate_scale_arcsec=sidereal_frame.starfield.wcs_metadata.x_ifov_arcsec,
+                wcs_model=sidereal_frame.starfield.wcs,
+            )
+        except Exception as e:  # header/WCS incomplete — stay unbounded
+            logger.warning("Header-derived streak fallback failed: %s", e)
+            geometry_streak = None
+        if geometry_streak is not None:
+            geometry_from_header = True
+            logger.info(
+                "Rate-frame streak unavailable; using header track rate as a search "
+                "prior: length=%.1fpx, rotation=%.1f° (unverified — the shift is "
+                "still validated below)",
+                geometry_streak.length, geometry_streak.rotation,
+            )
+
     logger.info("Cross correlating rate and sidereal frames")
 
     # fast fourier-based cross correlation
     cross_correlated_image = cross_corr(sidereal_data, rate_data)
 
     # After getting initial measurements, mask the cross-correlation frame based on expected shift
-    if (
-        streak_measurements.frame_extraction is not None
-        and streak_measurements.frame_extraction.length > 10
-    ):
+    if geometry_streak is not None and geometry_streak.length > 10:
         # Only apply masking if we have a reasonable length estimate (> 10 pixels)
         # Calculate maximum expected shift from streak measurements
-        streak_rate = streak_measurements.frame_extraction.length / rate_exposure_time
+        streak_rate = geometry_streak.length / rate_exposure_time
         total_shift_time = (
             frame_exposure_gap_seconds  # Time between frames (including settling)
             + 0.5 * sidereal_exposure_time  # Half sidereal exposure
@@ -130,11 +155,14 @@ def solve_rate_from_sidereal(
         )
         max_expected_shift = streak_rate * total_shift_time
 
-        # Use 2x the expected shift as our mask radius to be conservative
-        mask_radius = int(2.0 * max_expected_shift)
+        # Use 2x the expected shift as our mask radius to be conservative, or
+        # 3x when the estimate came from the headers rather than the pixels.
+        mask_scale = 3.0 if geometry_from_header else 2.0
+        mask_radius = int(mask_scale * max_expected_shift)
         logger.info(
             f"Masking cross-correlation outside radius {mask_radius:.1f}px "
-            f"(from streak length={streak_measurements.frame_extraction.length:.1f}px, "
+            f"({'header-derived' if geometry_from_header else 'measured'} streak "
+            f"length={geometry_streak.length:.1f}px, "
             f"rate={streak_rate:.1f}px/s, time={total_shift_time:.1f}s)"
         )
 
@@ -198,10 +226,8 @@ def solve_rate_from_sidereal(
         # Use centroid-based measurement for streaks in cross-correlation
         # The cross-correlation of point sources with streaks produces a streak
         # Calculate expected shift distance from streak measurements
-        if streak_measurements.frame_extraction is not None:
-            streak_rate = (
-                streak_measurements.frame_extraction.length / rate_exposure_time
-            )
+        if geometry_streak is not None:
+            streak_rate = geometry_streak.length / rate_exposure_time
             total_shift_time = (
                 frame_exposure_gap_seconds
                 + 0.5 * sidereal_exposure_time
@@ -210,7 +236,8 @@ def solve_rate_from_sidereal(
             expected_distance = streak_rate * total_shift_time
             logger.info(
                 f"Expected shift distance: {expected_distance:.1f}px "
-                f"(rate={streak_rate:.1f}px/s, time={total_shift_time:.1f}s)"
+                f"(rate={streak_rate:.1f}px/s, time={total_shift_time:.1f}s"
+                f"{', header-derived prior' if geometry_from_header else ''})"
             )
         else:
             expected_distance = None
@@ -403,15 +430,31 @@ def solve_rate_from_sidereal(
         fwhm=pixel_fwhm,
     )
 
-    # If we couldn't extract a valid streak from the frame, mark as invalid
+    # If we couldn't extract a streak from the pixels, fall back to the one
+    # derived from the shift — but only when that shift passed star validation.
+    # Extraction is marginal (None on 2 of 6 rate frames in a GEO set), and
+    # discarding a shift that had just been confirmed against 47 stars threw
+    # away the whole link.  frame_to_frame comes from the validated shift, not
+    # from headers.
     if streak_measurements.frame_extraction is None:
-        logger.warning(
-            f"Failed to extract streak from rate frame {rate_frame.index} - marking shift as invalid"
-        )
-        frame_shift.processed = True
-        frame_shift.is_valid = False
-        frame_shift.error_message = "Could not extract valid streak from rate frame"
-        return
+        if valid and streak_measurements.frame_to_frame is not None:
+            logger.warning(
+                "Rate frame %d: streak extraction failed; using the shift-derived "
+                "streak (length=%.1fpx, rotation=%.1f°) since the shift passed "
+                "star validation",
+                rate_frame.index,
+                streak_measurements.frame_to_frame.length,
+                streak_measurements.frame_to_frame.rotation,
+            )
+            streak_measurements.frame_extraction = streak_measurements.frame_to_frame
+        else:
+            logger.warning(
+                f"Failed to extract streak from rate frame {rate_frame.index} - marking shift as invalid"
+            )
+            frame_shift.processed = True
+            frame_shift.is_valid = False
+            frame_shift.error_message = "Could not extract valid streak from rate frame"
+            return
 
     if config.plotting.debug and psf is not None:
         plot_single_frame(
