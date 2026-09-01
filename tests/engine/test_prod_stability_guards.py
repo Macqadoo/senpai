@@ -345,6 +345,65 @@ def test_solve_rate_from_sidereal_handles_string_exptime() -> None:
         assert frame_shift.processed is True
 
 
+def test_solve_rate_from_sidereal_skips_starfield_without_wcs() -> None:
+    """A retained starfield with no WCS must be skipped, not dereferenced.
+
+    The missing-WCS guard originally tested ``starfield is None`` / ``detection_metadata is
+    None``, using "a starfield exists" as a proxy for "a WCS exists". ``collect.py`` then
+    began RETAINING the starfield of a frame that failed to solve, so its detection-stage
+    FWHM would still reach the results — which created a state the proxy does not cover:
+    starfield present, ``wcs_metadata`` None. The guard fell through and
+    ``wcs_metadata.x_ifov_arcsec`` raised ``AttributeError``, which escapes
+    ``solve_rate_from_sidereal`` and takes the entire observation with it (measured on
+    calsat-cert: 10 observations / ~100 frames lost across rme03+rme04).
+    """
+    sidereal = _solved_sidereal_frame(0, datetime(2024, 1, 1, 0, 0, 0), exptime=2.0)
+    # Exactly what collect.py leaves behind when the plate solve fails: the starfield and its
+    # detection-stage FWHM survive, the WCS does not.
+    sidereal.starfield.wcs = None
+    sidereal.starfield.wcs_metadata = None
+    assert sidereal.starfield.detection_metadata is not None, "fixture must keep the FWHM"
+    rate = _rate_frame(1, datetime(2024, 1, 1, 0, 0, 2), exptime=2.0, seed=3)
+
+    frame_shift = FrameShift(source_index=0, target_index=1)
+    exc = _capture_exception(lambda: solve_rate_from_sidereal(sidereal, rate, frame_shift))
+
+    assert exc is None, f"a WCS-less starfield must be skipped, not raise: {exc!r}"
+    # processed=True matters as much as not raising: the caller pulls the next *unprocessed*
+    # shift, so returning without it livelocks on this shift forever.
+    assert frame_shift.processed is True
+    assert frame_shift.is_valid is False
+
+
+def test_solve_rate_from_rate_skips_starfield_without_catalog() -> None:
+    """A source starfield with no catalog stars must be skipped, not passed downstream.
+
+    Companion to the sidereal guard above. ``solve_rate_from_rate`` hands
+    ``starfield.catalog_stars`` to ``validate_proposed_shift``, which sorts it — so None
+    surfaces as a ``TypeError`` from inside a helper rather than a skipped shift. The
+    pipeline does not build that state today, which is precisely the position the sidereal
+    solver was in before an unrelated change made its equivalent state reachable.
+    """
+    frame_a = _rate_frame(0, datetime(2024, 1, 1, 0, 0, 0), exptime=2.0, seed=1)
+    frame_b = _rate_frame(1, datetime(2024, 1, 1, 0, 0, 2), exptime=2.0, seed=2)
+    frame_a.starfield = StarField(
+        detections=[],
+        image_metadata=ImageMetadata(width=_IMG, height=_IMG),
+        wcs=None,
+        wcs_metadata=_wcs_metadata(),
+        detection_metadata=DetectionMetadata(pixel_fwhm=3.0),
+        catalog_stars=None,
+        astrometric_fit_stars=None,
+    )
+
+    frame_shift = FrameShift(source_index=0, target_index=1)
+    exc = _capture_exception(lambda: solve_rate_from_rate(frame_a, frame_b, frame_shift))
+
+    assert exc is None, f"a catalog-less starfield must be skipped, not raise: {exc!r}"
+    assert frame_shift.processed is True
+    assert frame_shift.is_valid is False
+
+
 # --------------------------------------------------------------------------------------
 # Guard 3: fit_and_validate_wcs falls back instead of propagating a degenerate-geometry error.
 # --------------------------------------------------------------------------------------
