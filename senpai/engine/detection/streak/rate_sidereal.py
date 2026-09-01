@@ -42,8 +42,20 @@ def solve_rate_from_sidereal(
     # Mark the shift processed-but-invalid and skip, like solve_rate_from_rate,
     # so the loop makes progress and the batch completes gracefully instead of
     # failing (the frame is unusable without a WCS anyway).
+    #
+    # `wcs_metadata` is tested SEPARATELY from `starfield` because the two came apart.
+    # collect.py now RETAINS the starfield of a frame that failed to solve, so its
+    # detection-stage FWHM still reaches the results for sparse fields / autofocus.
+    # That created a third state — starfield present, WCS absent — in which both of
+    # the checks above are false while every `wcs_metadata.x_ifov_arcsec` read below
+    # is still an AttributeError that escapes and kills the whole observation.
+    # Testing the attribute this function actually dereferences, rather than using
+    # "a starfield exists" as a proxy for "a WCS exists", is what keeps the guard
+    # honest if the two are decoupled again. StarField derives wcs_metadata from wcs
+    # in a model validator, so `wcs_metadata is None` is equivalently "no WCS".
     if (sidereal_frame.starfield is None
-            or sidereal_frame.starfield.detection_metadata is None):
+            or sidereal_frame.starfield.detection_metadata is None
+            or sidereal_frame.starfield.wcs_metadata is None):
         logger.warning(
             "Skipping sidereal-rate shift %d->%d: missing starfield/WCS.",
             frame_shift.source_index, frame_shift.target_index,

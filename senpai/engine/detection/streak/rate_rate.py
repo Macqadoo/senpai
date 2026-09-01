@@ -207,9 +207,20 @@ def solve_rate_from_rate(
     # but-invalid and return: the caller's loop pulls the next *unprocessed* shift
     # (SenpaiRun.get_next_shift), so returning without setting processed=True hands
     # the same shift back forever — a livelock (observed in _full7).
-    if rate_frame_a.starfield is None:
+    #
+    # `catalog_stars` is tested alongside `starfield` for the same reason the sidereal
+    # solver tests `wcs_metadata`: guard the attribute this function actually reads, not
+    # a proxy for it. The stars are handed to validate_proposed_shift below, which sorts
+    # them (`sorted(catalog_stars, key=...)` in validation.py) — so None is a TypeError
+    # out of a helper, not a graceful failure. A starfield that exists without its
+    # catalog is not a state the pipeline produces today (a rate frame's starfield comes
+    # from WCS propagation, which implies the catalog query ran), which is exactly what
+    # made the sidereal case a latent crash for a release rather than a caught bug: it
+    # only became reachable when an unrelated change decoupled the two.
+    if (rate_frame_a.starfield is None
+            or rate_frame_a.starfield.catalog_stars is None):
         logger.warning(
-            "Skipping rate-to-rate shift %d->%d: source frame missing starfield "
+            "Skipping rate-to-rate shift %d->%d: source frame missing starfield/catalog "
             "— frame likely had no WCS solution.",
             frame_shift.source_index, frame_shift.target_index,
         )
