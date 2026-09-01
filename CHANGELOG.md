@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.8.2] - 2026-08-31
+
+### Fixed
+
+- **The rate-shift solvers no longer crash on a starfield that has no WCS.**
+  `solve_rate_from_sidereal` skipped a shift when the sidereal anchor had no
+  starfield or no detection metadata, using "a starfield exists" as a stand-in
+  for "a WCS exists". 2.8.0's `pipeline_mode` work (ec04ddc) made `collect.py`
+  retain the starfield of a frame that *failed* to solve, so its detection-stage
+  FWHM would still reach the results for sparse fields and autofocus. That
+  created a state the guard does not cover — starfield present, WCS absent — in
+  which both of its conditions are false and
+  `starfield.wcs_metadata.x_ifov_arcsec` raises `AttributeError`. The exception
+  escapes the solver, so a partially recoverable observation became a total
+  loss. Measured on the calsat-cert set against 2.8.1: 12 observations lost
+  across two sensors, spanning easy/medium/hard/degrading, every one of them
+  scored `solved=True` under 2.7.0 — 11 solved frames and 10 target detections
+  at ~1.8" median residual, none of them gross. The guard now tests
+  `wcs_metadata`, the attribute the function actually dereferences (`StarField`
+  derives it from `wcs` in a model validator, so this is equivalently "no WCS").
+- **`solve_rate_from_rate` guards `catalog_stars` for the same reason.** It hands
+  them to `validate_proposed_shift`, which sorts them, so `None` surfaces as a
+  `TypeError` from inside a helper rather than a skipped shift. Not reachable
+  today — a rate frame's starfield comes from WCS propagation — but it is the
+  same latent shape the sidereal guard had before an unrelated feature made its
+  equivalent state reachable.
+
 ## [2.8.1] - 2026-08-31
 
 ### Fixed
