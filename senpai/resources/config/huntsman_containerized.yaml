@@ -1,0 +1,94 @@
+# SENPAI profile for Huntsman/SensorKit FITS data in the server container.
+# Catalog and index paths match the mounts used by the existing image.
+app:
+  version: 0.1.0
+  debug: true
+
+  logging:
+    level: info
+
+  runtime:
+    save_processed_fits: true
+
+  astrometry:
+    indices_series: 5200_LITE
+    indices_path: /usr/local/astrometry/data
+    max_sources: 500
+    min_sources_for_attempt: 4
+    min_width_degrees: 0.5
+    max_width_degrees: 3.0
+    cpulimit_seconds: 60
+    docker_image: null
+    sip_refit_enabled: false
+    sip_refit_order: 2
+    tweak_order: 2
+
+  star_catalog:
+    type: sstrc7
+    path: /usr/local/sstrc7
+    faint_limit: 18.0
+
+  detection:
+    detect: true
+    detect_streaks: true
+    snr_threshold: 3.0
+    verbose: true
+
+  headers:
+    exposure_time:
+      exposure_time_keys: [EXPTIME]
+    observation_time:
+      observation_time_keys: [DATE-OBS]
+    pointing:
+      ra_dec_format: float
+      ra_units: degrees
+      dec_units: degrees
+      target_ra_keys: [RA]
+      target_dec_keys: [DEC]
+      boresight_azimuth_keys: [AZ]
+      boresight_altitude_keys: [ALT]
+    site:
+      positional_format: float
+      positional_unit: degrees
+      altitude_unit: kilometers
+      site_latitude_keys: [SITELAT]
+      site_longitude_keys: [SITELONG]
+      site_altitude_keys: [SITEELEV]
+    tracking:
+      track_mode_keys: [TRKMODE]
+      track_ra_rate_keys: [RA_RATE]
+      track_dec_rate_keys: [DEC_RATE]
+      track_ra_rate_unit: degrees/second
+      track_dec_rate_unit: degrees/second
+    filter_keys: [FILTER]
+
+  calibrations:
+    auto_apply_darks: false
+    auto_apply_flats: false
+    auto_remove_column_median: true
+    auto_remove_row_median: true
+    auto_scale_images: false
+    auto_subtract_background: false
+
+  photometry:
+    gain: 0.1
+    include_read_noise: true
+    read_noise: 1.0
+    min_snr: 3.0
+    max_crowding: 0.3
+    limiting_snr: 3.0
+    limiting_completeness_fraction: 0.5
+    preferred_filters:
+      - Sloan_r
+      - Sloan_g
+      - Johnson_V
+      - Johnson_R
+      - Gaia_G
+      - Johnson_B
+
+  plotting:
+    debug: true
+    review: true
+    photometry: true
+    psfs: true
+
