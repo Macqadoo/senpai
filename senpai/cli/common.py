@@ -9,6 +9,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def write_json(path: Path, payload: object, *, indent: int = 2) -> None:
+    """Write consistently formatted JSON with a terminating newline."""
+
+    with Path(path).open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=indent)
+        handle.write("\n")
+
+
 def save_run_metadata(output_dir: Path, module_name: str, config) -> None:
     """Save command.txt and config.yaml to output_dir for reproducibility."""
     import yaml
@@ -57,8 +65,7 @@ def write_frame_quicklooks(summary, output_dir: Path) -> None:
                 k: v for k, v in ps.items() if k not in _QUICKLOOK_PHOTOMETRY_DROP
             }
         mode = fs.track_mode or "frame"
-        with open(Path(output_dir) / f"frame_{fs.index}_{mode}.json", "w") as f:
-            json.dump(data, f)
+        write_json(Path(output_dir) / f"frame_{fs.index}_{mode}.json", data)
     logger.info("Wrote %d per-frame quick-look JSONs", len(summary.frames))
 
 
@@ -108,8 +115,7 @@ def serialize_photometry_to_json(results, summary, output_path: Path) -> None:
         ],
     }
 
-    with open(output_path, "w") as f:
-        json.dump(photometry_output, f)
+    write_json(output_path, photometry_output)
     logger.info("Photometry results saved to %s", output_path)
 
 

@@ -8,11 +8,10 @@ Usage::
     python -m senpai.cli.detect -f <fits_or_dir> -o <dir> [-c config] [-D] [-P]
 """
 
-import json
 import logging
 from pathlib import Path
 
-from senpai.cli.common import ensure_output_dir, save_run_metadata, write_frame_quicklooks
+from senpai.cli.common import ensure_output_dir, save_run_metadata, write_frame_quicklooks, write_json
 from senpai.core.config import initialize_config
 from senpai.core.constants import LOCAL_APP_CONFIG_OVERRIDE
 from senpai.core.logging import set_log_level
@@ -112,37 +111,33 @@ if __name__ == "__main__":
 
     # Write results
     result = senpai_run.to_result()
-    with open(output_dir / f"senpai_{result.id}.json", "w") as f:
-        json.dump(result.model_dump(), f)
+    write_json(output_dir / f"senpai_{result.id}.json", result.model_dump())
 
     summary = senpai_run.to_summary()
-    with open(output_dir / f"senpai_{summary.id}_summary.json", "w") as f:
-        json.dump(summary.model_dump(), f)
+    write_json(output_dir / f"senpai_{summary.id}_summary.json", summary.model_dump())
 
     # Per-frame quick-look JSONs (detections + WCS, no bulk star arrays)
     write_frame_quicklooks(summary, output_dir)
 
     # Correlated streaks
     if senpai_run.correlated_streaks:
-        with open(output_dir / "correlated_streaks.json", "w") as f:
-            json.dump(
-                [cs.model_dump(mode="json") for cs in senpai_run.correlated_streaks],
-                f,
-            )
+        write_json(
+            output_dir / "correlated_streaks.json",
+            [cs.model_dump(mode="json") for cs in senpai_run.correlated_streaks],
+        )
         logger.info("Wrote %d correlated streaks", len(senpai_run.correlated_streaks))
 
     # Per-frame streak candidates (sidereal + rate)
     for frame in senpai_run.sidereal_frames + senpai_run.rate_track_frames:
         if frame.streak_candidates:
             path = output_dir / f"streak_candidates_{frame.index}.json"
-            with open(path, "w") as f:
-                json.dump(
-                    [
-                        sc.model_dump(mode="json") if hasattr(sc, "model_dump") else sc
-                        for sc in frame.streak_candidates
-                    ],
-                    f,
-                )
+            write_json(
+                path,
+                [
+                    sc.model_dump(mode="json") if hasattr(sc, "model_dump") else sc
+                    for sc in frame.streak_candidates
+                ],
+            )
 
     final_plots(senpai_run, output_dir)
 

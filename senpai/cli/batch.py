@@ -2,7 +2,6 @@
 import argparse
 import concurrent.futures
 import functools
-import json
 import logging
 import multiprocessing
 import os
@@ -15,7 +14,7 @@ from tqdm import tqdm
 
 from senpai.astrometry import enforce_indices, require_astrometry_install
 from senpai.catalog.runner import enforce_catalog
-from senpai.cli.common import save_run_metadata, write_frame_quicklooks
+from senpai.cli.common import save_run_metadata, write_frame_quicklooks, write_json
 from senpai.core.config import get_config, initialize_config
 from senpai.core.constants import LOCAL_APP_CONFIG_OVERRIDE
 from senpai.core.logging import set_log_level
@@ -85,12 +84,16 @@ def process_single_dataset(
         senpai_run = process_senpai_collect(file_list, id=id_value)
 
         result = senpai_run.to_result()
-        with open(dataset_output_dir / f"senpai_{result.senpai_version}_{id_value}.json", "w") as f:
-            json.dump(result.model_dump(), f)
+        write_json(
+            dataset_output_dir / f"senpai_{result.senpai_version}_{id_value}.json",
+            result.model_dump(),
+        )
 
         summary = senpai_run.to_summary()
-        with open(dataset_output_dir / f"senpai_{summary.senpai_version}_{id_value}_summary.json", "w") as f:
-            json.dump(summary.model_dump(), f)
+        write_json(
+            dataset_output_dir / f"senpai_{summary.senpai_version}_{id_value}_summary.json",
+            summary.model_dump(),
+        )
 
         # Per-frame quick-look JSONs (detections + WCS, no bulk star arrays)
         write_frame_quicklooks(summary, dataset_output_dir)
@@ -286,8 +289,7 @@ def batch_process(
                         if not results_queue.empty():
                             result = results_queue.get_nowait()
                             results.append(result)
-                            with open(summary_file, "w") as f:
-                                json.dump(results, f, indent=4)
+                            write_json(summary_file, results)
 
                             if result["status"] == "success":
                                 logger.info(
@@ -308,8 +310,7 @@ def batch_process(
                                 "data_path": str(process_info["dataset_dir"]),
                             }
                         )
-                        with open(summary_file, "w") as f:
-                            json.dump(results, f, indent=4)
+                        write_json(summary_file, results)
 
                     # Clean up
                     del processes[pid]
@@ -344,8 +345,7 @@ def batch_process(
                             "data_path": str(dataset_dir),
                         }
                     )
-                    with open(summary_file, "w") as f:
-                        json.dump(results, f, indent=4)
+                    write_json(summary_file, results)
 
                     # Clean up
                     del processes[pid]
@@ -376,8 +376,7 @@ def batch_process(
         "total_time": total_time,
         "results": results,
     }
-    with open(summary_file, "w") as f:
-        json.dump(summary, f, indent=4)
+    write_json(summary_file, summary)
 
 
 if __name__ == "__main__":
