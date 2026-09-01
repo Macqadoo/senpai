@@ -1290,9 +1290,22 @@ def extract_streak_dims_robust(
     )
 
     # Step 1: Create a clean working copy of the data
-    working_data = data.copy()
-    # Keep an UNMODIFIED copy for cutout extraction (so masking doesn't corrupt the PSF)
-    original_data = data.copy()
+    #
+    # Median-filter the peak-finding copy only.  The matched filter below
+    # smears a single hot pixel into a kernel-shaped blob with a large
+    # response, so hot pixels win argmax: on a GEO set all 15 of the peaks
+    # this loop is allowed to examine were static hot pixels, and the
+    # extractor returned None on 2 of 6 frames purely on whether a real trail
+    # happened to fall inside one of their cutouts.  The rate point path has
+    # applied the same 3x3 median before detection all along.  Cutouts still
+    # come from original_data, so every measurement is made on raw pixels.
+    working_data = median_filter(data, size=3)
+    # Cutouts come from an unmasked copy (so masking doesn't corrupt the PSF),
+    # median-filtered like working_data: the cutout is normalised by its own
+    # max, so a single hot pixel next to a real trail pins every other pixel
+    # below half-peak and the candidate is thrown out as "saturated"
+    # (plateau_frac=1.00 means one pixel above half-peak, not a flat top).
+    original_data = median_filter(data, size=3)
 
     # Background statistics for thresholding
     bg_median = np.median(working_data)

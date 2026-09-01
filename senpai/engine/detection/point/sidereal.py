@@ -569,6 +569,7 @@ def validate_point_detection(
     fwhm: float,
     min_peak_significance: float = 5.0,
     edge_margin_fwhm: float = 3.0,
+    hot_pixel_threshold: float = 0.35,
 ) -> bool:
     """Validate that a detection is a genuine point source at its LOCAL scale.
 
@@ -584,8 +585,14 @@ def validate_point_detection(
     * Detections hanging off the frame edge, where no meaningful shape or
       background measurement exists at all.
 
+    * Single hot pixels: a delta function is significant against any local
+      background, and its inflated moment width (positive noise in the core
+      box drags it up) can clear a loose FWHM band, so neither of the checks
+      below rejects it on its own.
+
     Checks: edge margin, peak significance against a robust local annulus
-    background, and a loose moment-FWHM sanity band against the frame PSF.
+    background, brightest-pixel flux concentration, and a loose moment-FWHM
+    sanity band against the frame PSF.
 
     Returns True if the detection looks like a real point source.
     """
@@ -617,12 +624,20 @@ def validate_point_detection(
     if float(core.max()) < min_peak_significance * local_std:
         return False
 
-    # Moment FWHM sanity: consistent with the frame PSF (loose band — this
-    # is insurance, the local significance test does the heavy lifting)
+    # Hot-pixel rejection: a real point source spreads its flux over the PSF,
+    # a hot pixel puts nearly all of it in one pixel.  The rate path has always
+    # run this (filter_point_sources, same 0.35 default); the sidereal path did
+    # not, so hot pixels were reported as unknown objects.  On a GEO frame real
+    # stars peak at 26.3% and hot pixels start at 57.4%, so 0.35 has margin.
     weights = np.clip(core, 0, None)
-    total = weights.sum()
+    total = float(weights.sum())
     if total <= 0:
         return False
+    if float(weights.max()) / total > hot_pixel_threshold:
+        return False
+
+    # Moment FWHM sanity: consistent with the frame PSF (loose band — this
+    # is insurance, the local significance test does the heavy lifting)
     cy, cx = np.mgrid[-r_core : r_core + 1, -r_core : r_core + 1]
     mx = (weights * cx).sum() / total
     my = (weights * cy).sum() / total

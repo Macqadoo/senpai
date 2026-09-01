@@ -59,6 +59,29 @@ def detect_streaks_in_sidereal_frames(
     config = get_config()
     de_data: dict[int, tuple[np.ndarray, float, np.ndarray]] = {}
 
+    # The star trails on the rate frames are the signature the tracked object
+    # makes on a sidereal frame — same rate, so same length and angle.  Take
+    # the median across frames so one bad extraction can't skew it; None when
+    # no rate frame measured a streak, which just leaves detection unchanged.
+    trail_lengths = [
+        f.streak.pixel_length
+        for f in senpai_run.rate_track_frames
+        if f.streak is not None and f.streak.pixel_length
+    ]
+    trail_angles = [
+        float(np.degrees(np.arctan2(f.streak.sine_angle, f.streak.cosine_angle)) % 180.0)
+        for f in senpai_run.rate_track_frames
+        if f.streak is not None and f.streak.sine_angle is not None
+    ]
+    expected_length_pixels = float(np.median(trail_lengths)) if trail_lengths else None
+    expected_angle_deg = float(np.median(trail_angles)) if trail_angles else None
+    if expected_length_pixels is not None:
+        logger.info(
+            "Rate-frame trail geometry for sidereal matching: length=%.1fpx, "
+            "angle=%.1f° (median of %d rate frames)",
+            expected_length_pixels, expected_angle_deg or float("nan"), len(trail_lengths),
+        )
+
     for frame in senpai_run.sidereal_frames:
         if frame.starfield is None or not frame.starfield.fit:
             continue
@@ -72,6 +95,7 @@ def detect_streaks_in_sidereal_frames(
                 frame.frame.data,
                 frame.starfield,
                 exposure_time=exposure_time,
+                expected_length_pixels=expected_length_pixels,
             )
         except Exception as e:
             logger.warning("Streak detection failed for frame %d: %s", frame.index, e)

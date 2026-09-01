@@ -6,6 +6,99 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.8.2] - 2026-08-31
+
+### Fixed
+
+- **The rate-shift solvers no longer crash on a starfield that has no WCS.**
+  `solve_rate_from_sidereal` skipped a shift when the sidereal anchor had no
+  starfield or no detection metadata, using "a starfield exists" as a stand-in
+  for "a WCS exists". 2.8.0's `pipeline_mode` work (ec04ddc) made `collect.py`
+  retain the starfield of a frame that *failed* to solve, so its detection-stage
+  FWHM would still reach the results for sparse fields and autofocus. That
+  created a state the guard does not cover — starfield present, WCS absent — in
+  which both of its conditions are false and
+  `starfield.wcs_metadata.x_ifov_arcsec` raises `AttributeError`. The exception
+  escapes the solver, so a partially recoverable observation became a total
+  loss. Measured on the calsat-cert set against 2.8.1: 12 observations lost
+  across two sensors, spanning easy/medium/hard/degrading, every one of them
+  scored `solved=True` under 2.7.0 — 11 solved frames and 10 target detections
+  at ~1.8" median residual, none of them gross. The guard now tests
+  `wcs_metadata`, the attribute the function actually dereferences (`StarField`
+  derives it from `wcs` in a model validator, so this is equivalently "no WCS").
+- **`solve_rate_from_rate` guards `catalog_stars` for the same reason.** It hands
+  them to `validate_proposed_shift`, which sorts them, so `None` surfaces as a
+  `TypeError` from inside a helper rather than a skipped shift. Not reachable
+  today — a rate frame's starfield comes from WCS propagation — but it is the
+  same latent shape the sidereal guard had before an unrelated feature made its
+  equivalent state reachable.
+
+## [2.8.1] - 2026-08-31
+
+### Fixed
+
+- **Hot pixels are no longer reported as detections.** `filter_point_sources`'
+  brightest-pixel concentration check (and the 3x3 median prefilter) only ever
+  ran on the rate path, so the sidereal non-catalog promotion in
+  `collect.py` emitted single hot pixels as unknown objects — 76 of them on a
+  GEO frame, every one hot at a fixed detector pixel in all 7 frames.
+  `validate_point_detection` now applies the same 0.35 concentration gate.
+  Measured on that frame: real stars peak at 26.3% of flux in one pixel,
+  hot pixels start at 57.4%.
+- **Point-source width is measured with the estimator it is compared against.**
+  The "PSF too wide" gate in `filter_point_sources` fitted a single Gaussian
+  and compared it to `pixel_seeing`, which comes from `_radial_profile_fwhm`.
+  The Gaussian widens to absorb PSF wings and reads ~80% high, putting the
+  median *real* star at the 1.5x limit and rejecting a bright tracked target in
+  every rate frame (fit 5.5px, radial profile 3.70px, limit 5.28px). It now
+  measures with `_radial_profile_fwhm`; the ratio-based roundness and aspect
+  checks still use the fit, where the bias cancels.
+- **The catalog-star trail veto no longer drops compact sources.** It compared
+  peak brightness only, so a trail passing within a fifth of a bright target's
+  peak vetoed it — losing the target on 2 of 6 rate frames, one by a single
+  count. A trailed star continues along the trail axis through the detection
+  and a tracked point source does not, so the veto now exempts detections with
+  no along-axis continuation (target 0.005-0.007 against 0.35-0.93 for trailed
+  stars). Sampling runs through the detection, not the catalog position, so it
+  does not inherit catalog or shift position error.
+- **Hot pixels no longer become streaks.** The sidereal streak width floor sat
+  at 0.3xFWHM (1.06px at a 3.52px PSF), which single hot pixels cleared by as
+  little as 0.014px; it is now 0.8xFWHM, on the grounds that a streak is the
+  PSF smeared along one axis and cannot be narrower than the PSF. Candidates
+  whose flux is concentrated in one sample along their own axis are rejected,
+  and the edge margin now covers the refined streak length, so a streak running
+  off the frame — whose position is not measurable — is dropped.
+- **`extract_streak_dims_robust` is no longer defeated by hot pixels.** The
+  matched filter smears a hot pixel into a kernel-shaped blob with a large
+  response, so all 15 peaks the search is allowed to examine were hot pixels;
+  it returned `None` on 2 of 6 statistically identical rate frames and its
+  width oscillated between 7.0 and 13.0px. Peak-finding and cutouts now use a
+  3x3 median-filtered copy (the rate point path has done this before detection
+  all along). Across a GEO set the measurement went from
+  `52/50/None/52/50/None` to 49.0px on all six frames.
+- **A failed streak extraction no longer discards a validated shift.** When the
+  pixel extraction returns `None` but the shift passed star validation, the
+  shift-derived streak is used instead of invalidating the link.
+- **The sidereal-to-rate shift search is bounded when extraction fails.**
+  Without an estimate the cross-correlation was left unbounded and locked onto
+  the wrong peak (returning the 6->4 displacement for the 6->5 pair). The
+  commanded track rate from the headers now seeds the mask radius as a prior
+  only — the shift is still star-validated, so a wrong header fails validation
+  and retries as before.
+
+### Added
+
+- **Sidereal streak detection can match the rate-frame trail.** In a
+  rate+sidereal collect the tracked object moves at exactly the rate the stars
+  trailed at, so a trailed star is the target's signature. The measured trail
+  length (median across rate frames) drives a second filter-bank pass; the
+  general 5xFWHM bank still runs over all angles and the stronger response per
+  pixel is kept, so nothing the default bank found is lost. On a GEO frame the
+  target's reported angle moved from 79.4 to 86.0 degrees (independently
+  measured at 84.3-85.4), its length from 42 to 46px, and its SNR by 11%.
+- Verbose logging for catalog-star veto decisions, which previously reported
+  only how many detections were vetoed and never why.
+
 ## [2.8.0] - 2026-08-14
 
 ### Added

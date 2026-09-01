@@ -16,6 +16,7 @@ from scipy.ndimage import median_filter
 from scipy.signal import fftconvolve
 
 from senpai.core.config import get_config
+from senpai.engine.detection.point.fwhm import _radial_profile_fwhm
 from senpai.engine.detection.streak.masking import percent_difference
 from senpai.engine.models.senpai import RateTrackFrame
 from senpai.engine.models.starfield import SatelliteInImage, SatelliteListImage
@@ -361,14 +362,24 @@ def filter_point_sources(
                     )
                 continue
 
-            # Check if PSF is too wide - use stricter threshold (1.5x) to catch streak detections
-            # Also check average FWHM to catch cases where one dimension is OK but average is too wide
-            max_fwhm = max(fx, fy)
-            if max_fwhm > pixel_seeing * 1.5 or fcomb > pixel_seeing * 1.5:
+            # Check if PSF is too wide - use stricter threshold (1.5x) to catch streak detections.
+            # Measure with the SAME estimator that produced pixel_seeing: a
+            # single-Gaussian fit widens to absorb the PSF wings (see
+            # _radial_profile_fwhm) and reads ~80% high, which put the median
+            # real star (5.15 px) at the 5.28 px limit and dropped a bright
+            # tracked target in all six rate frames.
+            profile_fwhm = _radial_profile_fwhm(
+                frame.frame.data, detection[0], detection[1],
+                max(8, int(round(3 * pixel_seeing))),
+            )
+            # Near an edge the profile is unmeasurable; fall back to the fit.
+            width_fwhm = profile_fwhm if profile_fwhm is not None else max(fx, fy)
+            if width_fwhm > pixel_seeing * 1.5:
                 if config.detection.verbose:
                     logger.warning(
-                        f"[{idx + 1}] [FILTERING] PSF too wide (FWHM_x={fx:.2f}, FWHM_y={fy:.2f}, "
-                        f"avg={fcomb:.2f}) compared to seeing={pixel_seeing:.2f}"
+                        f"[{idx + 1}] [FILTERING] PSF too wide (profile FWHM={width_fwhm:.2f}, "
+                        f"fit FWHM_x={fx:.2f}, FWHM_y={fy:.2f}, avg={fcomb:.2f}) "
+                        f"compared to seeing={pixel_seeing:.2f}"
                     )
                 continue
 
@@ -574,6 +585,32 @@ def veto_catalog_star_detections(
             kept.append(detection)
             continue
 
+        # Morphology exemption.  A trailed star runs THROUGH the detection —
+        # sample along the trail axis outside the PSF core and the signal is
+        # still there.  A tracked point source has nothing along that axis.
+        # Brightness alone cannot separate them (the veto compares peaks, and
+        # a trail passing close by can reach a fifth of a bright target's
+        # peak), which lost the target on 2 of 6 rate frames in a GEO set,
+        # one of them by a single count.  Measured on that set: target
+        # 0.005-0.007, trailed stars 0.35-0.93 — a 50x gap, so 0.15 sits in
+        # empty space rather than on top of either population.  Sampling runs
+        # through the DETECTION, not the catalog position, so it does not
+        # inherit catalog/shift position error.
+        if trailed and use_brightness and half_trail > 0:
+            det_peak_m = _peak_snr_at(
+                detection[0], detection[1], max(2, int(round(pixel_seeing / 2)))
+            )
+            if det_peak_m and det_peak_m > 0:
+                along = [
+                    _peak_snr_at(detection[0] + o * ux, detection[1] + o * uy, 2)
+                    for o in np.arange(-half_trail, half_trail + 1, 3.0)
+                    if abs(o) > 1.5 * pixel_seeing
+                ]
+                along = [a for a in along if a is not None]
+                if along and float(np.median(along)) / det_peak_m < 0.15:
+                    kept.append(detection)
+                    continue
+
         veto_this = True
         if use_brightness:
             # Brightness plausibility, measured from the IMAGE (catalog
@@ -611,6 +648,19 @@ def veto_catalog_star_detections(
                 # Within ~1.75 mag of the detection => plausibly the same
                 # trail; the factor absorbs knots and saturation structure.
                 if det_peak is None or max(ref_peaks) >= det_peak / 5.0:
+                    if get_config().detection.verbose:
+                        logger.warning(
+                            "[VETO] detection (%.1f,%.1f) peak=%.0f vetoed by star "
+                            "at (%.1f,%.1f) mag=%s: trail peak %.0f >= %.0f "
+                            "(det_peak/5), %d/%d samples usable",
+                            detection[0], detection[1],
+                            det_peak if det_peak is not None else float("nan"),
+                            sx, sy,
+                            f"{veto_stars[si].magnitude:.2f}"
+                            if veto_stars[si].magnitude is not None else "?",
+                            max(ref_peaks), (det_peak or 0) / 5.0,
+                            len(ref_peaks), len(offsets),
+                        )
                     veto_this = True
                     break
 
