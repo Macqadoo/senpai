@@ -8,7 +8,7 @@ app:
     level: info
 
   runtime:
-    save_processed_fits: true
+    save_processed_fits: false
 
   astrometry:
     indices_series: 5200_LITE
@@ -33,6 +33,9 @@ app:
     detect_streaks: true
     snr_threshold: 3.0
     verbose: true
+
+  streak:
+    reconcile_with_chain: false
 
   headers:
     exposure_time:
