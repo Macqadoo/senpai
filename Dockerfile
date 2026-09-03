@@ -17,6 +17,12 @@ RUN apt-get install -y --no-install-recommends python3 python3-pip \
 
 RUN apt-get install -y --no-install-recommends ffmpeg libsm6 libxext6
 
+# The python:* base image provides /usr/local/bin/python3, while the Debian
+# python3-* packages above are installed for the system interpreter.  Build
+# Astrometry.net's Python extensions with dependencies installed for the
+# interpreter that `make py` actually invokes.
+RUN python3 -m pip install --no-cache-dir setuptools numpy fitsio
+
 # install Astrometry.net
 RUN git clone https://github.com/dstndstn/astrometry.net.git /install-astrometry
 
