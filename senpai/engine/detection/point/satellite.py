@@ -369,7 +369,9 @@ def filter_point_sources(
             # real star (5.15 px) at the 5.28 px limit and dropped a bright
             # tracked target in all six rate frames.
             profile_fwhm = _radial_profile_fwhm(
-                frame.frame.data, detection[0], detection[1],
+                frame.frame.data,
+                detection[0],
+                detection[1],
                 max(8, int(round(3 * pixel_seeing))),
             )
             # Near an edge the profile is unmeasurable; fall back to the fit.
@@ -653,13 +655,20 @@ def veto_catalog_star_detections(
                             "[VETO] detection (%.1f,%.1f) peak=%.0f vetoed by star "
                             "at (%.1f,%.1f) mag=%s: trail peak %.0f >= %.0f "
                             "(det_peak/5), %d/%d samples usable",
-                            detection[0], detection[1],
+                            detection[0],
+                            detection[1],
                             det_peak if det_peak is not None else float("nan"),
-                            sx, sy,
-                            f"{veto_stars[si].magnitude:.2f}"
-                            if veto_stars[si].magnitude is not None else "?",
-                            max(ref_peaks), (det_peak or 0) / 5.0,
-                            len(ref_peaks), len(offsets),
+                            sx,
+                            sy,
+                            (
+                                f"{veto_stars[si].magnitude:.2f}"
+                                if veto_stars[si].magnitude is not None
+                                else "?"
+                            ),
+                            max(ref_peaks),
+                            (det_peak or 0) / 5.0,
+                            len(ref_peaks),
+                            len(offsets),
                         )
                     veto_this = True
                     break
@@ -711,8 +720,8 @@ def extract_point_sources(frame: RateTrackFrame) -> SatelliteListImage:
 
     # Use DAOStarFinder with adaptive threshold to get between 3-100 sources
     threshold_min = 3.0 * std  # Minimum threshold
-    threshold_max = 100.0 * std  # Maximum threshold (adjust as needed)
-    threshold = 10.0 * std  # Start with 5.0 * std
+    threshold_max = 20.0 * std  # Maximum threshold (adjust as needed)
+    threshold = 5.0 * std  # Start with 5.0 * std
     fwhm = 3.0
     if frame.starfield and frame.starfield.detection_metadata.pixel_fwhm is not None:
         fwhm = frame.starfield.detection_metadata.pixel_fwhm
@@ -721,7 +730,7 @@ def extract_point_sources(frame: RateTrackFrame) -> SatelliteListImage:
     attempts = 0
     sources = None
     min_sources = 50
-    max_sources = 300  # Adjust this value as needed
+    max_sources = 1000  # Adjust this value as needed
 
     # One kernel convolution serves every threshold attempt below (see
     # _dao_sources_at_threshold). The FFT convolution is the same linear
@@ -900,8 +909,11 @@ def extract_point_sources(frame: RateTrackFrame) -> SatelliteListImage:
     # shape filter below).  The image and noise enable the brightness gate:
     # position alone must not veto a bright target under a faint star trail.
     all_detections = veto_catalog_star_detections(
-        frame, all_detections, pixel_seeing,
-        image_sub=image_data_sub, noise_std=float(std),
+        frame,
+        all_detections,
+        pixel_seeing,
+        image_sub=image_data_sub,
+        noise_std=float(std),
     )
 
     # Filter out non-point sources
@@ -944,7 +956,8 @@ def extract_point_sources(frame: RateTrackFrame) -> SatelliteListImage:
         if not validate_point_detection(image_data, x, y, pixel_seeing):
             logger.debug(
                 "Rejected detection at (%.1f, %.1f): fails local-significance/shape validation",
-                x, y,
+                x,
+                y,
             )
             continue
 
