@@ -13,15 +13,16 @@ app:
   astrometry:
     indices_series: 5200_LITE
     indices_path: /usr/local/astrometry/data
-    max_sources: 500
+    max_sources: 300
     min_sources_for_attempt: 4
     min_width_degrees: 0.5
     max_width_degrees: 3.0
-    cpulimit_seconds: 60
+    cpulimit_seconds: 300
     docker_image: null
     sip_refit_enabled: false
     sip_refit_order: 2
     tweak_order: 2
+    release_index_page_cache: false
 
   star_catalog:
     type: sstrc7
@@ -90,8 +91,8 @@ app:
       - Johnson_B
 
   plotting:
-    debug: true
-    review: true
-    photometry: true
-    psfs: true
+    debug: false
+    review: false
+    photometry: false
+    psfs: false
 

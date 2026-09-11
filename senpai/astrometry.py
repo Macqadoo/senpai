@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Config conversion
 # ---------------------------------------------------------------------------
 
+
 def _build_astroeasy_config() -> astroeasy.AstrometryConfig:
     """Convert senpai's AppConfig.astrometry to an astroeasy AstrometryConfig."""
     cfg = get_or_initialize_config().astrometry
@@ -35,6 +36,7 @@ def _build_astroeasy_config() -> astroeasy.AstrometryConfig:
         max_sources=cfg.max_sources,
         min_sources_for_attempt=cfg.min_sources_for_attempt,
         docker_image=cfg.docker_image,
+        release_index_page_cache=False,  # TODO: modify yaml and config to have this toggleable.
     )
 
 
@@ -42,11 +44,13 @@ def _build_astroeasy_config() -> astroeasy.AstrometryConfig:
 # Model conversion helpers
 # ---------------------------------------------------------------------------
 
-def _sources_to_detections(sources: StarListImage) -> tuple[list[astroeasy.Detection], astroeasy.ImageMetadata]:
+
+def _sources_to_detections(
+    sources: StarListImage,
+) -> tuple[list[astroeasy.Detection], astroeasy.ImageMetadata]:
     """Convert senpai StarListImage → astroeasy Detection list + ImageMetadata."""
     detections = [
-        astroeasy.Detection(x=s.x, y=s.y, flux=s.counts)
-        for s in sources.detections
+        astroeasy.Detection(x=s.x, y=s.y, flux=s.counts) for s in sources.detections
     ]
     metadata = astroeasy.ImageMetadata(
         width=sources.image_metadata.width,
@@ -98,18 +102,22 @@ def _solve_result_to_starfield(
 
     fit_wcs = _wcsresult_to_wcsmodel(result.wcs) if result.wcs else None
 
-    astrometric_fit_stars = [
-        StarInSpace(
-            ra=m.ra,
-            dec=m.dec,
-            magnitude=m.magnitude,
-            catalog=m.catalog,
-            catalog_id=m.catalog_id,
-            x=m.x,
-            y=m.y,
-        )
-        for m in result.matched_stars
-    ] if result.matched_stars else []
+    astrometric_fit_stars = (
+        [
+            StarInSpace(
+                ra=m.ra,
+                dec=m.dec,
+                magnitude=m.magnitude,
+                catalog=m.catalog,
+                catalog_id=m.catalog_id,
+                x=m.x,
+                y=m.y,
+            )
+            for m in result.matched_stars
+        ]
+        if result.matched_stars
+        else []
+    )
 
     return StarField(
         astrometric_fit_stars=astrometric_fit_stars or None,
@@ -126,6 +134,7 @@ def _solve_result_to_starfield(
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def solve_field(sources: StarListImage, wcs: WCSModel | None = None) -> StarField:
     """Solve astrometry for detected sources.
 
@@ -136,7 +145,9 @@ def solve_field(sources: StarListImage, wcs: WCSModel | None = None) -> StarFiel
     Returns:
         StarField with WCS solution, matched stars, and fit status.
     """
-    logger.info("attempting astrometric solution on %i sources", len(sources.detections))
+    logger.info(
+        "attempting astrometric solution on %i sources", len(sources.detections)
+    )
     config = get_or_initialize_config()
 
     if len(sources.detections) < config.astrometry.min_sources_for_attempt:
@@ -164,7 +175,9 @@ def solve_field(sources: StarListImage, wcs: WCSModel | None = None) -> StarFiel
     return _solve_result_to_starfield(result, sources)
 
 
-def _solve_field_cascade(sources: StarListImage, wcs: WCSModel | None, config) -> StarField:
+def _solve_field_cascade(
+    sources: StarListImage, wcs: WCSModel | None, config
+) -> StarField:
     """Run the astroeasy escalation cascade (solver_mode 'tetra3'/'chain').
 
     'tetra3' = native tiers only (T0 refine + T1 pattern match, no
@@ -188,7 +201,8 @@ def _solve_field_cascade(sources: StarListImage, wcs: WCSModel | None, config) -
         logger.warning(
             "solver_mode=%s but no catalog mirror configured "
             "(astrometry.fast_solve.mirror_dir or star_catalog type gaia_local) — "
-            "native tiers will be skipped", mode,
+            "native tiers will be skipped",
+            mode,
         )
 
     if fast.sensor_profile:
@@ -209,12 +223,17 @@ def _solve_field_cascade(sources: StarListImage, wcs: WCSModel | None, config) -
     dotnet_config = _build_astroeasy_config() if mode == "chain" else None
 
     result = cascade.solve(
-        detections, metadata,
-        profile=profile, mirror_dir=mirror_dir,
-        dotnet_config=dotnet_config, prior_wcs=prior_wcs, tiers=tiers,
+        detections,
+        metadata,
+        profile=profile,
+        mirror_dir=mirror_dir,
+        dotnet_config=dotnet_config,
+        prior_wcs=prior_wcs,
+        tiers=tiers,
     )
     logger.info(
-        "cascade (%s): %s — attempts: %s", mode,
+        "cascade (%s): %s — attempts: %s",
+        mode,
         f"solved at {result.tier}" if result.tier else "all tiers failed",
         [(t.tier, t.status, f"{t.duration_ms:.0f}ms") for t in result.attempts],
     )
@@ -222,7 +241,9 @@ def _solve_field_cascade(sources: StarListImage, wcs: WCSModel | None, config) -
     # Persist the cascade tier + total solve time so the per-frame summary can report which
     # rung fired (T0/T1/T3) and how long it took — otherwise this only exists in the log.
     starfield.solver_tier = result.tier
-    starfield.solve_ms = sum(t.duration_ms for t in result.attempts) if result.attempts else None
+    starfield.solve_ms = (
+        sum(t.duration_ms for t in result.attempts) if result.attempts else None
+    )
     return starfield
 
 

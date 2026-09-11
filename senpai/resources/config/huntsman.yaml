@@ -14,11 +14,11 @@ app:
   astrometry:
     indices_series: 5200_LITE
     indices_path: /Volumes/seagate1TB/stars/data/share/5000/5200-LITE
-    max_sources: 500
+    max_sources: 300
     min_sources_for_attempt: 4
     min_width_degrees: 0.5
-    max_width_degrees: 3.0
-    cpulimit_seconds: 60
+    max_width_degrees: 1.5
+    cpulimit_seconds: 300
     docker_image: astrometry-cli
     sip_refit_enabled: false
     sip_refit_order: 2
@@ -95,4 +95,3 @@ app:
     review: true
     photometry: true
     psfs: true
-
