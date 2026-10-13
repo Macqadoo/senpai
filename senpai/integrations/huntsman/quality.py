@@ -1,4 +1,4 @@
-"""Sidereal FWHM quality checks and anchor selection for Huntsman batches."""
+"""Sidereal quality checks and anchor selection for Huntsman batches."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from senpai.integrations.huntsman.batches import HuntsmanBatch, HuntsmanFrameRec
 logger = logging.getLogger(__name__)
 
 SiderealPolicy = Literal["first", "sharpest", "all"]
+DEFAULT_MIN_SIDEREAL_FWHM = 4.1
 DEFAULT_MAX_SIDEREAL_FWHM = 20.0
 DEFAULT_MIN_SIDEREAL_SOURCES = 10
 
@@ -68,10 +69,11 @@ class HuntsmanBatchSelection:
 def measure_sidereal_quality(
     path: Path,
     *,
+    min_fwhm: float = DEFAULT_MIN_SIDEREAL_FWHM,
     max_fwhm: float = DEFAULT_MAX_SIDEREAL_FWHM,
     min_sources: int = DEFAULT_MIN_SIDEREAL_SOURCES,
 ) -> SiderealQualityResult:
-    """Measure detection-stage FWHM without a solve, catalog query or photometry."""
+    """Measure detection-stage source quality without solving or photometry."""
 
     try:
         from senpai.engine.models.metadata import TrackMode
@@ -113,11 +115,26 @@ def measure_sidereal_quality(
     if source_count < min_sources:
         return SiderealQualityResult(
             path=path,
-            passed=True,
-            conclusive=False,
+            passed=False,
+            conclusive=True,
             median_fwhm=median_fwhm,
             detected_source_count=source_count,
-            reason=f"only {source_count} detected sources; need {min_sources}",
+            reason=(
+                f"only {source_count} point-source detections; "
+                f"need at least {min_sources}"
+            ),
+        )
+    if median_fwhm < min_fwhm:
+        return SiderealQualityResult(
+            path=path,
+            passed=False,
+            conclusive=True,
+            median_fwhm=median_fwhm,
+            detected_source_count=source_count,
+            reason=(
+                f"median detection FWHM {median_fwhm:.1f}px is below "
+                f"the plausible stellar floor of {min_fwhm:.1f}px"
+            ),
         )
     if median_fwhm > max_fwhm:
         return SiderealQualityResult(
@@ -142,6 +159,7 @@ def select_batch_frames(
     *,
     policy: SiderealPolicy = "sharpest",
     skip_blurry_sidereal: bool = True,
+    min_fwhm: float = DEFAULT_MIN_SIDEREAL_FWHM,
     max_fwhm: float = DEFAULT_MAX_SIDEREAL_FWHM,
     min_sources: int = DEFAULT_MIN_SIDEREAL_SOURCES,
     evaluator: Callable[..., SiderealQualityResult] = measure_sidereal_quality,
@@ -165,7 +183,12 @@ def select_batch_frames(
     if not skip_blurry_sidereal and policy != "sharpest":
         to_measure = []
     quality = tuple(
-        evaluator(frame.path, max_fwhm=max_fwhm, min_sources=min_sources)
+        evaluator(
+            frame.path,
+            min_fwhm=min_fwhm,
+            max_fwhm=max_fwhm,
+            min_sources=min_sources,
+        )
         for frame in to_measure
     )
     quality_by_path = {result.path: result for result in quality}

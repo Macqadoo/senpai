@@ -26,11 +26,20 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SENSOR_HEADER_KEYS: tuple[str, ...] = (
     "SENSOR",
-    "SENSORID",
-    "CAMERA",
-    "CAMID",
     "INSTRUME",
     "DETECTOR",
+)
+
+DEFAULT_SENSOR_ID_HEADER_KEYS: tuple[str, ...] = (
+    "SENSORID",
+    "CAMSERNO",
+)
+
+DEFAULT_CAMERA_HEADER_KEYS: tuple[str, ...] = (
+    "CAMERAID",
+    "UNITID",
+    "CAMID",
+    "CAMERA",
 )
 
 _RATE_UNIT_TO_ARCSEC_PER_SECOND: dict[str, float] = {
@@ -57,8 +66,24 @@ class HuntsmanFrameRecord:
     sensor: str
     track_mode: TrackMode
     track_mode_source: str
+    filter_source: str | None = None
     norad_id: str | None = None
     mode_disagreement: bool = False
+    sktask_id: str | None = None
+    controller_task_id: str | None = None
+    camera_id: str | None = None
+    camera_id_source: str | None = None
+    sensor_id: str | None = None
+    sensor_id_source: str | None = None
+    target_id: str | None = None
+    target_id_source: str | None = None
+    target_type: str | None = None
+    target_type_source: str | None = None
+    norad_id_source: str | None = None
+    gain_e_per_adu: float | None = None
+    gain_source: str | None = None
+    read_noise_electrons: float | None = None
+    read_noise_source: str | None = None
 
     def to_manifest(self) -> dict:
         return {
@@ -67,6 +92,7 @@ class HuntsmanFrameRecord:
             "task_id": self.task_id,
             "task_id_source": self.task_id_source,
             "filter": self.filter_name,
+            "filter_source": self.filter_source,
             "sensor": self.sensor,
             "track_mode": self.track_mode.value,
             "track_mode_source": self.track_mode_source,
@@ -77,12 +103,27 @@ class HuntsmanFrameRecord:
             ),
             "mode_disagreement": self.mode_disagreement,
             "norad_id": self.norad_id,
+            "sktask_id": self.sktask_id,
+            "controller_task_id": self.controller_task_id,
+            "camera_id": self.camera_id,
+            "camera_id_source": self.camera_id_source,
+            "sensor_id": self.sensor_id,
+            "sensor_id_source": self.sensor_id_source,
+            "target_id": self.target_id,
+            "target_id_source": self.target_id_source,
+            "target_type": self.target_type,
+            "target_type_source": self.target_type_source,
+            "norad_id_source": self.norad_id_source,
+            "gain_e_per_adu": self.gain_e_per_adu,
+            "gain_source": self.gain_source,
+            "read_noise_electrons": self.read_noise_electrons,
+            "read_noise_source": self.read_noise_source,
         }
 
 
 @dataclass(slots=True)
 class HuntsmanBatch:
-    """A task/filter/sensor group suitable for one collect-pipeline call."""
+    """A task/filter/camera/sensor group suitable for one pipeline call."""
 
     task_id: str
     task_id_source: str
@@ -90,6 +131,22 @@ class HuntsmanBatch:
     sensor: str
     norad_id: str | None
     frames: list[HuntsmanFrameRecord] = field(default_factory=list)
+    filter_source: str | None = None
+    sktask_id: str | None = None
+    controller_task_id: str | None = None
+    camera_id: str | None = None
+    camera_id_source: str | None = None
+    sensor_id: str | None = None
+    sensor_id_source: str | None = None
+    target_id: str | None = None
+    target_id_source: str | None = None
+    target_type: str | None = None
+    target_type_source: str | None = None
+    norad_id_source: str | None = None
+    gain_e_per_adu: float | None = None
+    gain_source: str | None = None
+    read_noise_electrons: float | None = None
+    read_noise_source: str | None = None
 
     @property
     def sidereal_frames(self) -> list[HuntsmanFrameRecord]:
@@ -108,6 +165,8 @@ class HuntsmanBatch:
             safe_label(self.norad_id, "none"),
             safe_label(self.filter_name, "none"),
         ]
+        if self.camera_id is not None:
+            parts.append(safe_label(self.camera_id, "unknown-camera"))
         if self.sensor.casefold() != "unknown":
             parts.append(safe_label(self.sensor, "unknown"))
         parts.append(safe_label(self.task_id, "unknown-task"))
@@ -123,8 +182,24 @@ class HuntsmanBatch:
             "task_id": self.task_id,
             "task_id_source": self.task_id_source,
             "filter": self.filter_name,
+            "filter_source": self.filter_source,
             "sensor": self.sensor,
             "norad_id": self.norad_id,
+            "sktask_id": self.sktask_id,
+            "controller_task_id": self.controller_task_id,
+            "camera_id": self.camera_id,
+            "camera_id_source": self.camera_id_source,
+            "sensor_id": self.sensor_id,
+            "sensor_id_source": self.sensor_id_source,
+            "target_id": self.target_id,
+            "target_id_source": self.target_id_source,
+            "target_type": self.target_type,
+            "target_type_source": self.target_type_source,
+            "norad_id_source": self.norad_id_source,
+            "gain_e_per_adu": self.gain_e_per_adu,
+            "gain_source": self.gain_source,
+            "read_noise_electrons": self.read_noise_electrons,
+            "read_noise_source": self.read_noise_source,
             "num_sidereal": len(self.sidereal_frames),
             "num_rate": len(self.rate_frames),
             "mode_disagreements": sum(frame.mode_disagreement for frame in self.frames),
@@ -175,17 +250,52 @@ def _first_value(header: Header, keys: list[str] | tuple[str, ...]) -> str | Non
     return None
 
 
-def _header_keys(config: AppConfig, sensor_header_keys: tuple[str, ...]) -> set[str]:
+def _first_value_with_source(
+    header: Header,
+    keys: list[str] | tuple[str, ...],
+) -> tuple[str | None, str | None]:
+    for key in keys:
+        value = _clean(header.get(key))
+        if value is not None:
+            return value, key
+    return None, None
+
+
+def _first_float_with_source(
+    header: Header,
+    keys: list[str] | tuple[str, ...],
+) -> tuple[float | None, str | None]:
+    value, source = _first_value_with_source(header, keys)
+    if value is None:
+        return None, None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None, source
+    return (numeric if math.isfinite(numeric) else None), source
+
+
+def _header_keys(
+    config: AppConfig,
+    sensor_header_keys: tuple[str, ...],
+    camera_header_keys: tuple[str, ...],
+) -> set[str]:
     tracking = config.headers.tracking
     return {
         "SKTASKID",
         "TASKID",
         "NORAD_ID",
+        "TARGET",
+        "TARGTYPE",
+        "EGAIN",
+        "RDNOISE",
         *config.headers.filter_keys,
         *tracking.track_mode_keys,
         *tracking.track_ra_rate_keys,
         *tracking.track_dec_rate_keys,
         *sensor_header_keys,
+        *DEFAULT_SENSOR_ID_HEADER_KEYS,
+        *camera_header_keys,
     }
 
 
@@ -193,10 +303,11 @@ def _read_discovery_header(
     path: Path,
     config: AppConfig,
     sensor_header_keys: tuple[str, ...],
+    camera_header_keys: tuple[str, ...],
 ) -> Header:
     """Read only grouping-related keywords, searching HDUs in file order."""
 
-    keys = _header_keys(config, sensor_header_keys)
+    keys = _header_keys(config, sensor_header_keys, camera_header_keys)
     header = Header()
     with fits.open(path, memmap=False, lazy_load_hdus=True) as hdus:
         for hdu in hdus:
@@ -243,11 +354,12 @@ def _discover_track_mode(
     config: AppConfig,
 ) -> tuple[TrackMode, str] | None:
     tracking = config.headers.tracking
-    header_mode = _normalize_header_track_mode(
-        _first_value(header, tracking.track_mode_keys or ["TRKMODE"])
+    header_mode_value, header_mode_source = _first_value_with_source(
+        header, tracking.track_mode_keys or ["TRKMODE"]
     )
+    header_mode = _normalize_header_track_mode(header_mode_value)
     if header_mode is not None:
-        return header_mode, "TRKMODE"
+        return header_mode, header_mode_source or "TRKMODE"
 
     ra_rate = _rate_value(header, tracking.track_ra_rate_keys, tracking.track_ra_rate_unit)
     dec_rate = _rate_value(header, tracking.track_dec_rate_keys, tracking.track_dec_rate_unit)
@@ -278,9 +390,15 @@ def _frame_record(
     config: AppConfig,
     sensor_override: str | None,
     sensor_header_keys: tuple[str, ...],
+    camera_header_keys: tuple[str, ...],
 ) -> HuntsmanFrameRecord:
     parsed = parse_huntsman_filename(path)
-    header = _read_discovery_header(path, config, sensor_header_keys)
+    header = _read_discovery_header(
+        path,
+        config,
+        sensor_header_keys,
+        camera_header_keys,
+    )
 
     sktaskid = _first_value(header, ("SKTASKID",))
     taskid = _first_value(header, ("TASKID",))
@@ -298,9 +416,38 @@ def _frame_record(
         raise ValueError("no usable TRKMODE, tracking rates, or filename track mode")
     track_mode, track_source = mode_result
 
-    filter_name = _first_value(header, config.headers.filter_keys) or parsed.filename_filter or "unknown"
+    filter_name, filter_source = _first_value_with_source(
+        header, config.headers.filter_keys
+    )
+    if filter_name is None:
+        filter_name = parsed.filename_filter or "unknown"
+        filter_source = "filename" if parsed.filename_filter is not None else None
+    camera_id, camera_id_source = _first_value_with_source(
+        header,
+        camera_header_keys,
+    )
+    sensor_id, sensor_id_source = _first_value_with_source(
+        header,
+        DEFAULT_SENSOR_ID_HEADER_KEYS,
+    )
     sensor = sensor_override or _first_value(header, sensor_header_keys) or "unknown"
-    norad_id = _first_value(header, ("NORAD_ID",)) or parsed.filename_norad_id
+    target_id, target_id_source = _first_value_with_source(header, ("TARGET",))
+    target_type, target_type_source = _first_value_with_source(header, ("TARGTYPE",))
+    norad_id, norad_id_source = _first_value_with_source(header, ("NORAD_ID",))
+    if (
+        norad_id is None
+        and target_type
+        and target_type.casefold() in {"norad", "tle"}
+    ):
+        norad_id = target_id
+        norad_id_source = "TARGET"
+    if norad_id is None and parsed.filename_norad_id is not None:
+        norad_id = parsed.filename_norad_id
+        norad_id_source = "filename"
+    gain_e_per_adu, gain_source = _first_float_with_source(header, ("EGAIN",))
+    read_noise_electrons, read_noise_source = _first_float_with_source(
+        header, ("RDNOISE",)
+    )
     disagreement = (
         parsed.filename_track_mode is not None
         and parsed.filename_track_mode != track_mode
@@ -322,11 +469,27 @@ def _frame_record(
         task_id=resolved_task_id,
         task_id_source=task_source,
         filter_name=filter_name,
+        filter_source=filter_source,
         sensor=sensor,
         track_mode=track_mode,
         track_mode_source=track_source,
         norad_id=norad_id,
         mode_disagreement=disagreement,
+        sktask_id=sktaskid,
+        controller_task_id=taskid,
+        camera_id=camera_id,
+        camera_id_source=camera_id_source,
+        sensor_id=sensor_id,
+        sensor_id_source=sensor_id_source,
+        target_id=target_id,
+        target_id_source=target_id_source,
+        target_type=target_type,
+        target_type_source=target_type_source,
+        norad_id_source=norad_id_source,
+        gain_e_per_adu=gain_e_per_adu,
+        gain_source=gain_source,
+        read_noise_electrons=read_noise_electrons,
+        read_noise_source=read_noise_source,
     )
 
 
@@ -337,12 +500,13 @@ def discover_huntsman_batches(
     output_directory: str | Path | None = None,
     sensor: str | None = None,
     sensor_header_keys: tuple[str, ...] = DEFAULT_SENSOR_HEADER_KEYS,
+    camera_header_keys: tuple[str, ...] = DEFAULT_CAMERA_HEADER_KEYS,
 ) -> HuntsmanDiscovery:
     """Recursively discover and group Huntsman frames.
 
-    Groups are separated by task identity, filter and sensor. Filename-only
-    task identities also include date and NORAD in their grouping key because
-    the legacy eight-character token is not globally unique.
+    Groups are separated by task identity, filter, camera and sensor.
+    Filename-only task identities also include date and NORAD in their grouping
+    key because the legacy eight-character token is not globally unique.
     """
 
     data_root = Path(data_directory).resolve()
@@ -363,15 +527,23 @@ def discover_huntsman_batches(
             continue
 
         try:
-            record = _frame_record(path, config, sensor, sensor_header_keys)
+            record = _frame_record(
+                path,
+                config,
+                sensor,
+                sensor_header_keys,
+                camera_header_keys,
+            )
         except Exception as exc:
             skipped.append(DiscoveryIssue(path=path, reason=str(exc)))
             logger.warning("Skipping Huntsman FITS %s: %s", path, exc)
             continue
 
+        camera_identity = record.camera_id or record.sensor_id or record.sensor
         key: tuple[str, ...] = (
             record.task_id.casefold(),
             record.filter_name.casefold(),
+            camera_identity.casefold(),
             record.sensor.casefold(),
         )
         if record.task_id_source == "filename":
@@ -389,9 +561,94 @@ def discover_huntsman_batches(
                 task_id=strongest.task_id,
                 task_id_source=strongest.task_id_source,
                 filter_name=records[0].filter_name,
+                filter_source=records[0].filter_source,
                 sensor=records[0].sensor,
                 norad_id=next((record.norad_id for record in records if record.norad_id), None),
                 frames=records,
+                sktask_id=next((record.sktask_id for record in records if record.sktask_id), None),
+                controller_task_id=next(
+                    (
+                        record.controller_task_id
+                        for record in records
+                        if record.controller_task_id
+                    ),
+                    None,
+                ),
+                camera_id=next((record.camera_id for record in records if record.camera_id), None),
+                camera_id_source=next(
+                    (
+                        record.camera_id_source
+                        for record in records
+                        if record.camera_id_source
+                    ),
+                    None,
+                ),
+                sensor_id=next((record.sensor_id for record in records if record.sensor_id), None),
+                sensor_id_source=next(
+                    (
+                        record.sensor_id_source
+                        for record in records
+                        if record.sensor_id_source
+                    ),
+                    None,
+                ),
+                target_id=next((record.target_id for record in records if record.target_id), None),
+                target_id_source=next(
+                    (
+                        record.target_id_source
+                        for record in records
+                        if record.target_id_source
+                    ),
+                    None,
+                ),
+                target_type=next(
+                    (record.target_type for record in records if record.target_type),
+                    None,
+                ),
+                target_type_source=next(
+                    (
+                        record.target_type_source
+                        for record in records
+                        if record.target_type_source
+                    ),
+                    None,
+                ),
+                norad_id_source=next(
+                    (
+                        record.norad_id_source
+                        for record in records
+                        if record.norad_id_source
+                    ),
+                    None,
+                ),
+                gain_e_per_adu=next(
+                    (
+                        record.gain_e_per_adu
+                        for record in records
+                        if record.gain_e_per_adu is not None
+                    ),
+                    None,
+                ),
+                gain_source=next(
+                    (record.gain_source for record in records if record.gain_source),
+                    None,
+                ),
+                read_noise_electrons=next(
+                    (
+                        record.read_noise_electrons
+                        for record in records
+                        if record.read_noise_electrons is not None
+                    ),
+                    None,
+                ),
+                read_noise_source=next(
+                    (
+                        record.read_noise_source
+                        for record in records
+                        if record.read_noise_source
+                    ),
+                    None,
+                ),
             )
         )
 

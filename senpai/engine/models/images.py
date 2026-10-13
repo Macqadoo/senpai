@@ -184,7 +184,9 @@ class ProcessedFitsImage(BaseModel):
 
     @classmethod
     def from_fits(
-        cls, fits_file: fits.ImageHDU | fits.PrimaryHDU, file_path: str | None = None
+        cls,
+        fits_file: fits.ImageHDU | fits.PrimaryHDU | fits.CompImageHDU,
+        file_path: str | None = None,
     ) -> "ProcessedFitsImage":
         # Extract exposure time from header
         exposure_time = None
@@ -215,8 +217,20 @@ class ProcessedFitsImage(BaseModel):
 
     @classmethod
     def from_file_bytes(cls, file_bytes: bytes, file_path: str | None = None) -> "ProcessedFitsImage":
-        hdul = fits.open(BytesIO(file_bytes))
-        return cls.from_fits(hdul[0], file_path=file_path)
+        with fits.open(BytesIO(file_bytes), memmap=False) as hdul:
+            image_hdu = next(
+                (
+                    hdu
+                    for hdu in hdul
+                    if isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU))
+                    and hdu.data is not None
+                    and hdu.data.ndim >= 2
+                ),
+                None,
+            )
+            if image_hdu is None:
+                raise ValueError("FITS file contains no image HDU")
+            return cls.from_fits(image_hdu, file_path=file_path)
 
     @classmethod
     def from_base64_string(cls, base64_string: str) -> "ProcessedFitsImage":

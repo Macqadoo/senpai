@@ -14,6 +14,7 @@ from senpai.cli.huntsman import build_parser
 from senpai.core import config as config_module
 from senpai.core.config import AppConfig, load_yaml
 from senpai.engine.models.metadata import TrackMode
+from senpai.engine.utils.file_io import load_fits_file
 from senpai.integrations.huntsman.batches import (
     HuntsmanBatch,
     HuntsmanDiscovery,
@@ -47,6 +48,22 @@ def _write_fits(path: Path, **header_values) -> None:
     for key, value in header_values.items():
         header[key] = value
     fits.PrimaryHDU(np.zeros((8, 8), dtype=np.float32), header=header).writeto(path)
+
+
+def _write_compressed_fits(path: Path, **header_values) -> None:
+    header = fits.Header()
+    for key, value in header_values.items():
+        header[key] = value
+    fits.HDUList(
+        [
+            fits.PrimaryHDU(),
+            fits.CompImageHDU(
+                np.zeros((8, 8), dtype=np.uint16),
+                header=header,
+                compression_type="RICE_1",
+            ),
+        ]
+    ).writeto(path)
 
 
 def _record(path: str, mode: TrackMode) -> HuntsmanFrameRecord:
@@ -157,9 +174,133 @@ def test_discovery_prefers_full_task_id_and_separates_filters(
     by_filter = {batch.filter_name: batch for batch in discovery.batches}
     assert by_filter["g"].task_id == full_id
     assert by_filter["g"].task_id_source == "SKTASKID"
+    assert by_filter["g"].sktask_id == full_id
+    assert by_filter["g"].controller_task_id == "different-task-id"
     assert len(by_filter["g"].sidereal_frames) == 1
     assert len(by_filter["g"].rate_frames) == 1
     assert len(by_filter["r"].rate_frames) == 1
+
+
+def test_discovery_preserves_header_identity_and_separates_cameras(
+    tmp_path, huntsman_config
+):
+    common = {
+        "SKTASKID": "sensorkit-task",
+        "TASKID": "controller-task",
+        "SENSORID": "asi183-serial",
+        "TARGET": "25371",
+        "TARGTYPE": "NORAD",
+        "NORAD_ID": 25371,
+        "FILTER": "r",
+        "INSTRUME": "ZWO ASI183MM Pro",
+        "EGAIN": 0.1,
+        "RDNOISE": 1.2,
+    }
+    for camera_id in ("C3", "C4"):
+        camera_dir = tmp_path / camera_id
+        camera_dir.mkdir()
+        _write_fits(
+            camera_dir / f"{camera_id}_rate.fits",
+            **common,
+            CAMERAID=camera_id,
+            TRKMODE="rate",
+        )
+        _write_fits(
+            camera_dir / f"{camera_id}_sidereal.fits",
+            **common,
+            CAMERAID=camera_id,
+            TRKMODE="sidereal",
+        )
+
+    discovery = discover_huntsman_batches(tmp_path, huntsman_config)
+
+    assert not discovery.skipped
+    assert len(discovery.batches) == 2
+    by_camera = {batch.camera_id: batch for batch in discovery.batches}
+    assert set(by_camera) == {"C3", "C4"}
+    for camera_id, batch in by_camera.items():
+        assert f"_{camera_id}_" in batch.output_label
+        assert batch.sktask_id == "sensorkit-task"
+        assert batch.controller_task_id == "controller-task"
+        assert batch.sensor_id == "asi183-serial"
+        assert batch.filter_source == "FILTER"
+        assert batch.target_id == "25371"
+        assert batch.target_id_source == "TARGET"
+        assert batch.target_type == "NORAD"
+        assert batch.target_type_source == "TARGTYPE"
+        assert batch.norad_id == "25371"
+        assert batch.norad_id_source == "NORAD_ID"
+        assert batch.gain_e_per_adu == pytest.approx(0.1)
+        assert batch.gain_source == "EGAIN"
+        assert batch.read_noise_electrons == pytest.approx(1.2)
+        assert batch.read_noise_source == "RDNOISE"
+        assert len(batch.rate_frames) == 1
+        assert len(batch.sidereal_frames) == 1
+
+
+def test_discovery_accepts_deployed_huntsman_identity_cards(
+    tmp_path, huntsman_config
+):
+    common = {
+        "SKTASKID": "sensorkit-task",
+        "TASKID": "controller-task",
+        "CAMSERNO": "camera-serial",
+        "TARGET": "42917",
+        "FILTER": "r",
+        "INSTRUME": "ZWO ASI183MM Pro",
+    }
+    for unit_id in ("C5", "C7"):
+        unit_dir = tmp_path / unit_id
+        unit_dir.mkdir()
+        _write_compressed_fits(
+            unit_dir / f"{unit_id}_rate.fits",
+            **common,
+            UNITID=unit_id,
+            TRKMODE="rate",
+        )
+        _write_compressed_fits(
+            unit_dir / f"{unit_id}_sidereal.fits",
+            **common,
+            UNITID=unit_id,
+            TRKMODE="sidereal",
+        )
+
+    discovery = discover_huntsman_batches(tmp_path, huntsman_config)
+
+    assert not discovery.skipped
+    assert len(discovery.batches) == 2
+    by_unit = {batch.camera_id: batch for batch in discovery.batches}
+    assert set(by_unit) == {"C5", "C7"}
+    for unit_id, batch in by_unit.items():
+        assert batch.camera_id_source == "UNITID"
+        assert batch.sensor_id == "camera-serial"
+        assert batch.sensor_id_source == "CAMSERNO"
+        assert batch.target_id == "42917"
+        assert len(batch.rate_frames) == 1
+        assert len(batch.sidereal_frames) == 1
+        manifest = batch.to_manifest()
+        assert manifest["camera_id"] == unit_id
+        assert manifest["camera_id_source"] == "UNITID"
+        assert manifest["sensor_id_source"] == "CAMSERNO"
+
+
+def test_loader_reads_sensorkit_compressed_image_hdu(tmp_path):
+    path = tmp_path / "sensorkit-compressed.fits"
+    _write_compressed_fits(
+        path,
+        SKTASKID="sensorkit-task",
+        UNITID="C8",
+        FILTER="r",
+        TRKMODE="rate",
+        EXPTIME=10.0,
+    )
+
+    image = load_fits_file(path)
+
+    assert image.data.shape == (8, 8)
+    assert image.header["SKTASKID"] == "sensorkit-task"
+    assert image.header["UNITID"] == "C8"
+    assert image.metadata.exposure_time == pytest.approx(10.0)
 
 
 def test_trkmode_overrides_filename_label(tmp_path, huntsman_config):

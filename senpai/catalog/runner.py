@@ -260,6 +260,7 @@ def _query_catalog_sstr7_cached(
                     magnitude=star["mv"],
                     magnitudes=magnitudes if len(magnitudes) > 0 else None,
                     catalog=star["catalog"],
+                    catalog_id=star.get("catalog_id"),
                 )
             )
 

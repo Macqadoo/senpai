@@ -27,6 +27,7 @@ from scipy.spatial import cKDTree
 
 from senpai.core.config import PhotometryConfig, get_config
 from senpai.engine.models.images import ProcessedFitsImage
+from senpai.engine.models.measurements import PhotometryStarMeasurement
 from senpai.engine.models.senpai import RateTrackFrame, SiderealFrame
 from senpai.engine.models.starfield import SatelliteListImage, StarField, StarInSpace
 
@@ -123,6 +124,13 @@ class SimplePhotometrySummary:
     # catalog_stars list is no longer serialized in full. None entries mark
     # stars whose catalog record carried no id.
     stars_catalog_id: list[str | None] | None = None
+    # Complete, directly linked per-star measurements. These records are
+    # retained in the full result; SenpaiRun.to_summary deliberately strips
+    # them from the compact summary product.
+    star_measurements_schema_version: int | None = None
+    star_measurements: list[PhotometryStarMeasurement] | None = None
+    zero_point_n_stars: int = 0
+    zero_point_snr_threshold: float | None = None
     # Literal aperture/annulus geometry (pixels) actually used on this frame —
     # the PSF-factor policy resolved against this frame's measured FWHM, kept so
     # a reader needn't re-derive it from FWHM × factors (lossy for rate frames).
@@ -144,6 +152,24 @@ class SimplePhotometrySummary:
             self.limiting_magnitude_50 = round(self.limiting_magnitude_50, 3)
         if self.limiting_magnitude_90 is not None:
             self.limiting_magnitude_90 = round(self.limiting_magnitude_90, 3)
+
+
+@dataclass
+class _ZeroPointSelection:
+    """Per-result provenance from the zero-point selection pipeline."""
+
+    catalog_magnitude: float | None
+    catalog_band: str | None
+    used: bool = False
+    rejection_reason: str | None = None
+
+
+@dataclass
+class _ZeroPointFit:
+    zero_point: float | None
+    zero_point_err: float | None
+    selections: list[_ZeroPointSelection]
+    snr_threshold: float | None = None
 
 
 def empirical_background_std_adu(image_data: np.ndarray) -> float:
@@ -1325,8 +1351,10 @@ def _has_bright_neighbor(
     return False
 
 
-def _get_best_magnitude(star: StarInSpace, preferred_filters: list[str] = None) -> float | None:
-    """Get the best available magnitude for a star."""
+def _get_best_magnitude_and_band(
+    star: StarInSpace, preferred_filters: list[str] | None = None
+) -> tuple[float | None, str | None]:
+    """Get the best available magnitude and identify its catalog band."""
     # Use a simple cache key based on star's magnitude attributes
     # Since stars are objects, we can't use lru_cache directly, but we can
     # cache based on the magnitude values themselves
@@ -1345,17 +1373,27 @@ def _get_best_magnitude(star: StarInSpace, preferred_filters: list[str] = None) 
     if hasattr(star, "magnitudes") and star.magnitudes:
         for filter_name in preferred_filters:
             if filter_name in star.magnitudes:
-                return star.magnitudes[filter_name]
+                return star.magnitudes[filter_name], filter_name
 
         # Fallback to first available magnitude from dict
         if star.magnitudes:
-            return next(iter(star.magnitudes.values()))
+            band, magnitude = next(iter(star.magnitudes.items()))
+            return magnitude, band
 
     # Fallback to primary magnitude if no magnitudes dict
     if hasattr(star, "magnitude") and star.magnitude is not None:
-        return star.magnitude
+        return star.magnitude, "Primary"
 
-    return None
+    return None, None
+
+
+def _get_best_magnitude(
+    star: StarInSpace, preferred_filters: list[str] | None = None
+) -> float | None:
+    """Get the best available magnitude for a star."""
+
+    magnitude, _band = _get_best_magnitude_and_band(star, preferred_filters)
+    return magnitude
 
 
 def _find_common_magnitude_system(stars: list[StarInSpace], preferred_filters: list[str] = None) -> str | None:
@@ -1702,6 +1740,111 @@ def compute_completeness_curve(
     return completeness_mag, completeness_pct
 
 
+def _source_key(star: StarInSpace) -> str:
+    """Return a stable cross-frame key for a catalog source."""
+
+    catalog = str(getattr(star, "catalog", None) or "unknown")
+    catalog_id = getattr(star, "catalog_id", None)
+    if catalog_id is not None:
+        return f"{catalog}:{catalog_id}"
+    # Legacy/non-ID catalogs retain a deterministic coordinate fallback. New
+    # SSTRC7 queries populate catalog_id before proper motion is applied.
+    return f"{catalog}:radec:{float(star.ra):.10f}:{float(star.dec):+.10f}"
+
+
+def _rounded_magnitudes(star: StarInSpace) -> dict[str, float] | None:
+    magnitudes = getattr(star, "magnitudes", None) or {}
+    rounded = {
+        str(band): round(float(magnitude), 3)
+        for band, magnitude in magnitudes.items()
+        if magnitude is not None and np.isfinite(float(magnitude))
+    }
+    return rounded or None
+
+
+def _build_photometry_star_measurements(
+    results: list[SimplePhotometryResult],
+    selections: list[_ZeroPointSelection],
+    isolated: list[bool],
+    starfield: StarField,
+) -> list[PhotometryStarMeasurement]:
+    """Build complete, index-aligned records for every attempted star."""
+
+    if not (len(results) == len(selections) == len(isolated)):
+        raise ValueError("photometry result, ZP selection, and isolation lengths differ")
+
+    exposure_time = getattr(starfield.image_metadata, "exposure_time", None)
+    if exposure_time is None or exposure_time <= 0:
+        exposure_time = 1.0
+    exposure_correction = 2.5 * np.log10(float(exposure_time))
+
+    measurements: list[PhotometryStarMeasurement] = []
+    for result, selection, is_isolated in zip(results, selections, isolated, strict=True):
+        star = result.star
+        primary_mag = getattr(star, "magnitude", None)
+        primary_mag = round(float(primary_mag), 3) if primary_mag is not None else None
+        instrumental_mag = result.instrumental_magnitude
+        zp_raw = (
+            float(selection.catalog_magnitude) - float(instrumental_mag)
+            if selection.catalog_magnitude is not None and instrumental_mag is not None
+            else None
+        )
+        zp_per_second = zp_raw - exposure_correction if zp_raw is not None else None
+
+        measurements.append(
+            PhotometryStarMeasurement(
+                source_key=_source_key(star),
+                catalog=getattr(star, "catalog", None),
+                catalog_id=(
+                    str(star.catalog_id)
+                    if getattr(star, "catalog_id", None) is not None
+                    else None
+                ),
+                catalog_ra_deg=round(float(star.ra), 8),
+                catalog_dec_deg=round(float(star.dec), 8),
+                predicted_x=(round(float(star.x), 3) if star.x is not None else None),
+                predicted_y=(round(float(star.y), 3) if star.y is not None else None),
+                primary_catalog_magnitude=primary_mag,
+                catalog_magnitudes=_rounded_magnitudes(star),
+                zero_point_catalog_magnitude=(
+                    round(float(selection.catalog_magnitude), 3)
+                    if selection.catalog_magnitude is not None
+                    else None
+                ),
+                zero_point_catalog_band=selection.catalog_band,
+                flux=round(float(result.flux), 2),
+                flux_error=round(float(result.flux_err), 2),
+                instrumental_magnitude=(
+                    round(float(instrumental_mag), 4)
+                    if instrumental_mag is not None
+                    else None
+                ),
+                individual_zero_point_raw_flux=(
+                    round(zp_raw, 4) if zp_raw is not None else None
+                ),
+                individual_zero_point_per_second=(
+                    round(zp_per_second, 4) if zp_per_second is not None else None
+                ),
+                snr=round(float(result.snr), 3),
+                background_level=round(float(result.background_level), 3),
+                background_std=round(float(result.background_std), 3),
+                aperture_radius=round(float(result.aperture_radius), 3),
+                crowding_factor=round(float(result.crowding_factor), 4),
+                quality_flag=bool(result.quality_flag),
+                isolated=bool(is_isolated),
+                # Saturation is not currently retained by SimplePhotometryResult;
+                # an explicit null avoids falsely claiming that it was tested.
+                saturated=None,
+                # Results are constructed only after the aperture/background
+                # annulus passes the frame-margin check.
+                edge_clipped=False,
+                used_for_zero_point=selection.used,
+                zero_point_rejection_reason=selection.rejection_reason,
+            )
+        )
+    return measurements
+
+
 def _calculate_simple_photometry_summary(
     results: list[SimplePhotometryResult],
     starfield: StarField,
@@ -1734,8 +1877,10 @@ def _calculate_simple_photometry_summary(
     backgrounds = [r.background_level for r in results]
     median_background = float(np.median(backgrounds)) if backgrounds else 0
 
-    # Calculate zero point if catalog stars are available
-    zero_point, zero_point_err = _calculate_simple_zero_point(results, starfield, config)
+    # Calculate the zero point and retain the per-result selection provenance.
+    zero_point_fit = _calculate_simple_zero_point_details(results, starfield, config)
+    zero_point = zero_point_fit.zero_point
+    zero_point_err = zero_point_fit.zero_point_err
 
     # Estimate limiting magnitude using zero point and sky background when possible
     limiting_magnitude, limiting_magnitude_50, limiting_magnitude_90 = _estimate_simple_limiting_magnitude(
@@ -1813,6 +1958,13 @@ def _calculate_simple_photometry_summary(
         stars_isolated.append(bool(iso))
         stars_catalog_id.append(getattr(r.star, "catalog_id", None))
 
+    star_measurements = _build_photometry_star_measurements(
+        results,
+        zero_point_fit.selections,
+        iso_mask,
+        starfield,
+    )
+
     return SimplePhotometrySummary(
         n_stars=n_stars,
         n_quality=n_quality,
@@ -1832,6 +1984,10 @@ def _calculate_simple_photometry_summary(
         stars_zp_offset=stars_zp_offset or None,
         stars_isolated=stars_isolated or None,
         stars_catalog_id=stars_catalog_id or None,
+        star_measurements_schema_version=1,
+        star_measurements=star_measurements or None,
+        zero_point_n_stars=sum(selection.used for selection in zero_point_fit.selections),
+        zero_point_snr_threshold=zero_point_fit.snr_threshold,
     )
 
 
@@ -2345,18 +2501,15 @@ def _estimate_simple_limiting_magnitude(
     return (float(limiting_magnitude), None, None)
 
 
-def _calculate_simple_zero_point(
+def _calculate_simple_zero_point_details(
     results: list[SimplePhotometryResult],
     starfield: StarField,
     config: SimplePhotometryConfig | None = None,
-) -> tuple[float | None, float | None]:
-    """Calculate simple photometric zero point."""
+) -> _ZeroPointFit:
+    """Calculate the ZP and retain why every result was kept or rejected."""
 
     # Normalize config so we always have SimplePhotometryConfig
     config = _normalize_photometry_config(config)
-
-    # Use quality measurements with known magnitudes
-    catalog_results = []
 
     # Pre-compute isolation radius for neighbor checks (in pixels)
     iso_radius_pix: float | None = None
@@ -2389,45 +2542,76 @@ def _calculate_simple_zero_point(
             else:
                 kdtree = None
 
-    # Pre-compute magnitudes for result stars
-    result_mag_cache = {}
+    # Pre-compute both the magnitude and the exact catalog band used for each
+    # result. The previous scalar calculation used the same preferred-band
+    # policy but discarded the band name.
+    result_magnitudes: dict[int, tuple[float | None, str | None]] = {}
     for r in results:
         star_id = id(r.star)
-        if star_id not in result_mag_cache:
-            result_mag_cache[star_id] = _get_best_magnitude(r.star, config.preferred_filters if config else None)
+        if star_id not in result_magnitudes:
+            result_magnitudes[star_id] = _get_best_magnitude_and_band(
+                r.star, config.preferred_filters
+            )
 
-    def _select(min_snr: float) -> list[tuple[float, float]]:
-        """Catalog (mag, flux) pairs from clean, well-measured stars at/above
-        ``min_snr``, excluding crowded and bright-neighbour-blended sources."""
-        sel: list[tuple[float, float]] = []
-        for r in results:
-            if not r.quality_flag or r.flux <= 0 or r.snr < min_snr:
-                continue
-            if r.crowding_factor > config.zp_max_crowding:
-                continue
-            mag = result_mag_cache[id(r.star)]
-            if mag is None:
-                continue
-            if iso_radius_pix is not None and catalog_stars:
-                if _has_bright_neighbor(
-                    r.star, mag, catalog_stars, iso_radius_pix,
-                    config.isolation_delta_mag, mag_cache=mag_cache, kdtree=kdtree,
-                ):
-                    continue
-            sel.append((mag, r.flux))
-        return sel
+    selections = [
+        _ZeroPointSelection(
+            catalog_magnitude=result_magnitudes[id(result.star)][0],
+            catalog_band=result_magnitudes[id(result.star)][1],
+        )
+        for result in results
+    ]
+
+    eligible_indices: list[int] = []
+    for index, (result, selection) in enumerate(
+        zip(results, selections, strict=True)
+    ):
+        magnitude = selection.catalog_magnitude
+        if not result.quality_flag:
+            selection.rejection_reason = "quality_flag_failed"
+        elif result.flux <= 0:
+            selection.rejection_reason = "non_positive_flux"
+        elif result.crowding_factor > config.zp_max_crowding:
+            selection.rejection_reason = "crowding"
+        elif magnitude is None:
+            selection.rejection_reason = "missing_catalog_magnitude"
+        elif (
+            iso_radius_pix is not None
+            and catalog_stars
+            and _has_bright_neighbor(
+                result.star,
+                magnitude,
+                catalog_stars,
+                iso_radius_pix,
+                config.isolation_delta_mag,
+                mag_cache=mag_cache,
+                kdtree=kdtree,
+            )
+        ):
+            selection.rejection_reason = "bright_neighbor"
+        else:
+            eligible_indices.append(index)
 
     # Prefer the high-SNR, uncrowded sample; if a frame is too shallow/sparse to
     # supply enough such stars, relax the SNR floor toward the detection limit so
     # we still return a (lower-confidence) ZP rather than nothing.
-    catalog_results = _select(config.zp_min_snr)
-    if len(catalog_results) < config.zp_min_stars:
-        relaxed = _select(max(config.limiting_snr, 5.0))
-        if len(relaxed) > len(catalog_results):
-            catalog_results = relaxed
+    snr_threshold = float(config.zp_min_snr)
+    selected_indices = [i for i in eligible_indices if results[i].snr >= snr_threshold]
+    if len(selected_indices) < config.zp_min_stars:
+        relaxed_threshold = max(float(config.limiting_snr), 5.0)
+        relaxed = [i for i in eligible_indices if results[i].snr >= relaxed_threshold]
+        if len(relaxed) > len(selected_indices):
+            snr_threshold = relaxed_threshold
+            selected_indices = relaxed
 
-    if len(catalog_results) < 3:
-        return None, None
+    selected_set = set(selected_indices)
+    for index in eligible_indices:
+        if index not in selected_set:
+            selections[index].rejection_reason = "low_snr"
+
+    if len(selected_indices) < 3:
+        for index in selected_indices:
+            selections[index].rejection_reason = "insufficient_zero_point_stars"
+        return _ZeroPointFit(None, None, selections, snr_threshold)
 
     # Get exposure time (handle None case)
     exposure_time = getattr(starfield.image_metadata, "exposure_time", None)
@@ -2435,8 +2619,10 @@ def _calculate_simple_zero_point(
         exposure_time = 1.0  # Default to 1 second if not available
 
     # Per-star zero points: ZP = m + 2.5 * log10(flux/texp)
-    mags_arr = np.array([m for m, _ in catalog_results], dtype=float)
-    flux_arr = np.array([f for _, f in catalog_results], dtype=float)
+    mags_arr = np.array(
+        [selections[index].catalog_magnitude for index in selected_indices], dtype=float
+    )
+    flux_arr = np.array([results[index].flux for index in selected_indices], dtype=float)
     zps = mags_arr + 2.5 * np.log10(flux_arr / exposure_time)
 
     # Median + sigma-clip: robust to any residual blend/saturation outliers on
@@ -2444,14 +2630,34 @@ def _calculate_simple_zero_point(
     from astropy.stats import mad_std, sigma_clip
 
     clipped = sigma_clip(zps, sigma=config.zp_sigma_clip, maxiters=5, masked=True)
-    kept = zps[~clipped.mask] if np.ma.is_masked(clipped) else zps
-    if kept.size < 3:
-        kept = zps
+    clipped_mask = np.ma.getmaskarray(clipped)
+    if np.count_nonzero(~clipped_mask) < 3:
+        clipped_mask = np.zeros(zps.shape, dtype=bool)
+    kept = zps[~clipped_mask]
+
+    for local_index, result_index in enumerate(selected_indices):
+        if clipped_mask[local_index]:
+            selections[result_index].rejection_reason = "sigma_clipped"
+        else:
+            selections[result_index].used = True
+            selections[result_index].rejection_reason = None
+
     zero_point = float(np.median(kept))
     robust_sigma = float(mad_std(kept)) if kept.size > 1 else 0.0
     zero_point_err = robust_sigma / np.sqrt(kept.size) if kept.size else 0.0
 
-    return zero_point, zero_point_err
+    return _ZeroPointFit(zero_point, zero_point_err, selections, snr_threshold)
+
+
+def _calculate_simple_zero_point(
+    results: list[SimplePhotometryResult],
+    starfield: StarField,
+    config: SimplePhotometryConfig | None = None,
+) -> tuple[float | None, float | None]:
+    """Backward-compatible scalar zero-point API."""
+
+    fit = _calculate_simple_zero_point_details(results, starfield, config)
+    return fit.zero_point, fit.zero_point_err
 
 
 def calculate_star_snrs_with_aperture_photometry(

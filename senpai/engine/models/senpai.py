@@ -44,6 +44,15 @@ def _starfield_for_output(sf: StarField | None) -> StarField | None:
     return sf.model_copy(update={"catalog_stars": brightest})
 
 
+def _compact_photometry_summary(summary: dict | None) -> dict | None:
+    """Remove per-star records from the deliberately compact run summary."""
+    if summary is None:
+        return None
+    compact = dict(summary)
+    compact.pop("star_measurements", None)
+    return compact
+
+
 class SiderealFrameSerializable(BaseModel):
     starfield: StarField | None = None
     seeing: SeeingModel | None = None
@@ -901,7 +910,7 @@ class SenpaiRun(BaseModel):
             wcs_metadata=wcs_metadata,
             frame_metadata=frame.frame_metadata.to_serializable() if frame.frame_metadata else None,
             seeing=frame.seeing,
-            photometry_summary=frame.photometry_summary,
+            photometry_summary=_compact_photometry_summary(frame.photometry_summary),
             limiting_magnitude=limiting_magnitude,
             detections=detection_list,
             streak_candidates=streak_cands,

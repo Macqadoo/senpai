@@ -20,6 +20,7 @@ second, `mv` plus a non-empty `magnitudes` dict, and a `catalog` provenance
 string.
 """
 
+import hashlib
 import logging
 
 import numpy as np
@@ -40,6 +41,26 @@ INVALID_MAG = 32.0
 MAG_DECIMALS = 3
 
 BAND_NAMES = tuple(sstrc7.BAND_NAMES)
+
+
+def _stable_catalog_id(
+    ra_rad: float,
+    dec_rad: float,
+    pm_ra: float,
+    pm_dec: float,
+    parallax: float,
+) -> str:
+    """Build a deterministic ID from the immutable SSTRC7 catalog record.
+
+    SSTRC7 does not expose a native row identifier. Hashing its catalog-epoch
+    astrometry produces an ID that remains stable when proper motion is later
+    applied for a particular observation date.
+    """
+    payload = (
+        f"{ra_rad:.16e}|{dec_rad:.16e}|{pm_ra:.16e}|"
+        f"{pm_dec:.16e}|{parallax:.16e}"
+    ).encode()
+    return f"sstrc7:{hashlib.blake2s(payload, digest_size=12).hexdigest()}"
 
 
 def resolve_catalog_path(path: str | None = None):
@@ -119,6 +140,13 @@ def _star_records(field, filter_center: float | None) -> list[dict]:
 
         stars.append(
             {
+                "catalog_id": _stable_catalog_id(
+                    float(ra[i]),
+                    float(dec[i]),
+                    float(ra_pm[i]),
+                    float(dec_pm[i]),
+                    float(parallax[i]),
+                ),
                 "ra": float(ra[i]),
                 "dec": float(dec[i]),
                 "ra_pm": float(ra_pm[i]),

@@ -23,6 +23,10 @@ from senpai.integrations.huntsman.quality import (
     SiderealPolicy,
     select_batch_frames,
 )
+from senpai.integrations.huntsman.science_report import (
+    build_science_report,
+    write_science_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +81,35 @@ def has_pending_batches(
     )
 
 
+def _publish_science_report(
+    *,
+    batch: HuntsmanBatch,
+    selection,
+    batch_dir: Path,
+    config: AppConfig,
+    manifest: dict,
+    elapsed_seconds: float | None,
+    result=None,
+    summary=None,
+) -> dict:
+    """Write the stable NiFi/MongoDB science product and enrich the manifest."""
+
+    report = build_science_report(
+        batch=batch,
+        selection=selection,
+        config=config,
+        batch_dir=batch_dir,
+        status=manifest["status"],
+        error=manifest.get("error"),
+        elapsed_seconds=elapsed_seconds,
+        result=result,
+        summary=summary,
+        terminal_manifest=manifest,
+    )
+    written = write_science_report(report, batch_dir)
+    return {**manifest, **written.to_manifest()}
+
+
 def _process_batch(
     batch: HuntsmanBatch,
     output_root: Path,
@@ -94,6 +127,8 @@ def _process_batch(
         logger.info("Skipping existing Huntsman batch %s", batch.batch_id)
         return {**base_manifest, "status": "skipped_existing", "error": None}
 
+    config.runtime.output_dir = batch_dir
+    config.runtime.run_id = batch.batch_id
     selection = select_batch_frames(
         batch,
         policy=options.sidereal_policy,
@@ -104,19 +139,51 @@ def _process_batch(
     selection_manifest = selection.to_manifest()
     if selection.rejected_for_blur:
         logger.warning("Skipping blurry Huntsman batch %s", batch.batch_id)
-        return {
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        save_run_metadata(batch_dir, "senpai.cli.huntsman", config)
+        manifest = {
             **base_manifest,
             **selection_manifest,
             "status": "skipped_blurry",
             "error": "no sidereal frame passed the FWHM quality gate",
         }
+        try:
+            manifest = _publish_science_report(
+                batch=batch,
+                selection=selection,
+                batch_dir=batch_dir,
+                config=config,
+                manifest=manifest,
+                elapsed_seconds=0.0,
+            )
+        except Exception as exc:
+            logger.exception("Science report failed for skipped batch %s", batch.batch_id)
+            manifest["science_report_error"] = str(exc)
+        write_json(batch_dir / "huntsman_manifest.json", manifest)
+        return manifest
     if not selection.selected_files:
-        return {
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        save_run_metadata(batch_dir, "senpai.cli.huntsman", config)
+        manifest = {
             **base_manifest,
             **selection_manifest,
             "status": "skipped_empty",
             "error": "batch contains no usable frames",
         }
+        try:
+            manifest = _publish_science_report(
+                batch=batch,
+                selection=selection,
+                batch_dir=batch_dir,
+                config=config,
+                manifest=manifest,
+                elapsed_seconds=0.0,
+            )
+        except Exception as exc:
+            logger.exception("Science report failed for empty batch %s", batch.batch_id)
+            manifest["science_report_error"] = str(exc)
+        write_json(batch_dir / "huntsman_manifest.json", manifest)
+        return manifest
 
     batch_dir.mkdir(parents=True, exist_ok=True)
     pending_manifest = {
@@ -127,11 +194,11 @@ def _process_batch(
     }
     write_json(batch_dir / "huntsman_manifest.json", pending_manifest)
 
-    config.runtime.output_dir = batch_dir
-    config.runtime.run_id = batch.batch_id
     save_run_metadata(batch_dir, "senpai.cli.huntsman", config)
 
     started = time.monotonic()
+    result = None
+    summary = None
     try:
         images = load_fits_files(list(selection.selected_files))
         senpai_run = process_senpai_collect(images, id=batch.batch_id)
@@ -167,6 +234,25 @@ def _process_batch(
             "error": str(exc),
             "elapsed_seconds": round(time.monotonic() - started, 2),
         }
+
+    elapsed_seconds = manifest["elapsed_seconds"]
+    try:
+        manifest = _publish_science_report(
+            batch=batch,
+            selection=selection,
+            batch_dir=batch_dir,
+            config=config,
+            manifest=manifest,
+            elapsed_seconds=elapsed_seconds,
+            result=result,
+            summary=summary,
+        )
+    except Exception as exc:
+        logger.exception("Science report failed for Huntsman batch %s", batch.batch_id)
+        manifest["science_report_error"] = str(exc)
+        if manifest["status"] == "success":
+            manifest["status"] = "error"
+            manifest["error"] = f"science report generation failed: {exc}"
 
     write_json(batch_dir / "huntsman_manifest.json", manifest)
     return manifest
