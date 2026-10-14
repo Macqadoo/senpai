@@ -16,7 +16,7 @@ from senpai.cli.common import save_run_metadata, write_frame_quicklooks, write_j
 from senpai.core.config import AppConfig
 from senpai.engine.processing.collect import final_plots, process_senpai_collect
 from senpai.engine.utils.file_io import load_fits_files
-from senpai.integrations.huntsman.batches import HuntsmanBatch, HuntsmanDiscovery
+from senpai.integrations.huntsman.batches import HuntsmanBatch, HuntsmanDiscovery, safe_label
 from senpai.integrations.huntsman.quality import (
     DEFAULT_MAX_SIDEREAL_FWHM,
     DEFAULT_MIN_SIDEREAL_SOURCES,
@@ -29,6 +29,7 @@ from senpai.integrations.huntsman.science_report import (
 )
 
 logger = logging.getLogger(__name__)
+HUNTSMAN_LAYOUT_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,17 +50,61 @@ class HuntsmanRunOptions:
         }
 
 
-def completed_product_exists(batch: HuntsmanBatch, batch_dir: Path) -> bool:
-    """Return whether a batch directory contains a completed Huntsman product."""
+def batch_relative_directory(batch: HuntsmanBatch) -> Path:
+    """Return the stable v2 directory for one SensorKit/filter batch."""
+
+    sensorkit_task_id = batch.sktask_id or batch.task_id
+    return (
+        Path("batches")
+        / safe_label(sensorkit_task_id, "unknown-task")
+        / safe_label(batch.filter_name, "unknown-filter")
+    )
+
+
+def batch_output_directory(output_root: str | Path, batch: HuntsmanBatch) -> Path:
+    """Resolve a batch below a task/camera product root."""
+
+    return Path(output_root) / batch_relative_directory(batch)
+
+
+def _validate_unique_batch_directories(discovery: HuntsmanDiscovery) -> None:
+    """Reject mixed-camera inputs that would share a task/filter directory."""
+
+    claimed: dict[Path, HuntsmanBatch] = {}
+    for batch in discovery.batches:
+        relative = batch_relative_directory(batch)
+        previous = claimed.get(relative)
+        if previous is not None:
+            raise ValueError(
+                "Multiple Huntsman batches map to the same output directory "
+                f"{relative}: cameras {previous.camera_id!r} and "
+                f"{batch.camera_id!r}. Use a separate task/camera product root "
+                "for each invocation."
+            )
+        claimed[relative] = batch
+
+
+def _completed_manifest(batch_dir: Path) -> dict | None:
+    """Load a successful terminal manifest, or return ``None``."""
 
     manifest_path = batch_dir / "huntsman_manifest.json"
     if manifest_path.is_file():
         try:
             with manifest_path.open(encoding="utf-8") as handle:
-                return json.load(handle).get("status") == "success"
+                manifest = json.load(handle)
+            if manifest.get("status") == "success":
+                return manifest
         except (OSError, ValueError):
-            return False
-    return (batch_dir / f"senpai_{batch.batch_id}.json").is_file()
+            pass
+    return None
+
+
+def completed_product_exists(batch: HuntsmanBatch, batch_dir: Path) -> bool:
+    """Return whether a batch directory contains a completed Huntsman product."""
+
+    if _completed_manifest(batch_dir) is not None:
+        return True
+    return (batch_dir / "senpai" / "result.json").is_file() or (batch_dir / f"senpai_{batch.batch_id}.json").is_file()
 
 
 def has_pending_batches(
@@ -76,8 +121,7 @@ def has_pending_batches(
         return True
     output_root = Path(output_directory)
     return any(
-        not completed_product_exists(batch, output_root / batch.output_label)
-        for batch in discovery.batches
+        not completed_product_exists(batch, batch_output_directory(output_root, batch)) for batch in discovery.batches
     )
 
 
@@ -127,16 +171,30 @@ def _process_batch(
     config: AppConfig,
     options: HuntsmanRunOptions,
 ) -> dict:
-    batch_dir = output_root / batch.output_label
+    batch_dir = batch_output_directory(output_root, batch)
+    provenance_dir = batch_dir / "provenance"
+    senpai_dir = batch_dir / "senpai"
+    frames_dir = senpai_dir / "frames"
+    artifacts_dir = batch_dir / "artifacts"
     base_manifest = {
         **batch.to_manifest(),
+        "layout_version": HUNTSMAN_LAYOUT_VERSION,
+        "relative_output_dir": str(batch_relative_directory(batch)),
+        "legacy_output_label": batch.output_label,
         "output_dir": str(batch_dir),
         "options": options.to_manifest(),
     }
 
-    if options.skip_existing and completed_product_exists(batch, batch_dir):
+    existing_manifest = _completed_manifest(batch_dir) if options.skip_existing else None
+    if options.skip_existing and (existing_manifest or completed_product_exists(batch, batch_dir)):
         logger.info("Skipping existing Huntsman batch %s", batch.batch_id)
-        return {**base_manifest, "status": "skipped_existing", "error": None}
+        return {
+            **(existing_manifest or {}),
+            **base_manifest,
+            "existing_status": (existing_manifest or {}).get("status"),
+            "status": "skipped_existing",
+            "error": None,
+        }
 
     # RuntimeConfig declares this field as a string. Keep that contract when
     # assigning a Path-derived batch directory so model_dump(mode="json") does
@@ -154,7 +212,8 @@ def _process_batch(
     if selection.rejected_for_blur:
         logger.warning("Skipping blurry Huntsman batch %s", batch.batch_id)
         batch_dir.mkdir(parents=True, exist_ok=True)
-        save_run_metadata(batch_dir, "senpai.cli.huntsman", config)
+        provenance_dir.mkdir(parents=True, exist_ok=True)
+        save_run_metadata(provenance_dir, "senpai.cli.huntsman", config)
         manifest = {
             **base_manifest,
             **selection_manifest,
@@ -177,7 +236,8 @@ def _process_batch(
         return manifest
     if not selection.selected_files:
         batch_dir.mkdir(parents=True, exist_ok=True)
-        save_run_metadata(batch_dir, "senpai.cli.huntsman", config)
+        provenance_dir.mkdir(parents=True, exist_ok=True)
+        save_run_metadata(provenance_dir, "senpai.cli.huntsman", config)
         manifest = {
             **base_manifest,
             **selection_manifest,
@@ -199,7 +259,8 @@ def _process_batch(
         write_json(batch_dir / "huntsman_manifest.json", manifest)
         return manifest
 
-    batch_dir.mkdir(parents=True, exist_ok=True)
+    for directory in (batch_dir, provenance_dir, senpai_dir, frames_dir, artifacts_dir):
+        directory.mkdir(parents=True, exist_ok=True)
     pending_manifest = {
         **base_manifest,
         **selection_manifest,
@@ -208,7 +269,7 @@ def _process_batch(
     }
     write_json(batch_dir / "huntsman_manifest.json", pending_manifest)
 
-    save_run_metadata(batch_dir, "senpai.cli.huntsman", config)
+    save_run_metadata(provenance_dir, "senpai.cli.huntsman", config)
 
     started = time.monotonic()
     result = None
@@ -218,16 +279,16 @@ def _process_batch(
         senpai_run = process_senpai_collect(images, id=batch.batch_id)
 
         result = senpai_run.to_result()
-        result_path = batch_dir / f"senpai_{result.id}.json"
+        result_path = senpai_dir / "result.json"
         write_json(result_path, result.model_dump())
 
         summary = senpai_run.to_summary()
-        summary_path = batch_dir / f"senpai_{summary.id}_summary.json"
+        summary_path = senpai_dir / "summary.json"
         write_json(summary_path, summary.model_dump())
-        write_frame_quicklooks(summary, batch_dir)
+        write_frame_quicklooks(summary, frames_dir)
 
         try:
-            final_plots(senpai_run, batch_dir)
+            final_plots(senpai_run, artifacts_dir)
         except Exception as exc:
             logger.warning("Plots failed for Huntsman batch %s: %s", batch.batch_id, exc)
 
@@ -282,6 +343,7 @@ def run_huntsman_batches(
 
     options = options or HuntsmanRunOptions()
     output_root = Path(output_directory)
+    _validate_unique_batch_directories(discovery)
     output_root.mkdir(parents=True, exist_ok=True)
     summary_path = output_root / "huntsman_batch_summary.json"
 
@@ -291,6 +353,7 @@ def run_huntsman_batches(
         write_json(
             summary_path,
             {
+                "layout_version": HUNTSMAN_LAYOUT_VERSION,
                 "options": options.to_manifest(),
                 "num_discovery_issues": len(discovery.skipped),
                 "discovery_issues": [issue.to_manifest() for issue in discovery.skipped],
@@ -301,6 +364,7 @@ def run_huntsman_batches(
         write_json(
             summary_path,
             {
+                "layout_version": HUNTSMAN_LAYOUT_VERSION,
                 "options": options.to_manifest(),
                 "num_discovery_issues": len(discovery.skipped),
                 "discovery_issues": [issue.to_manifest() for issue in discovery.skipped],

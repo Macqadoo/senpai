@@ -22,6 +22,7 @@ from senpai.integrations.huntsman import science_report as science_report_module
 from senpai.integrations.huntsman.batches import HuntsmanBatch, HuntsmanFrameRecord
 from senpai.integrations.huntsman.filenames import ParsedHuntsmanFilename
 from senpai.integrations.huntsman.quality import HuntsmanBatchSelection
+from senpai.integrations.huntsman.runner import batch_output_directory
 from senpai.integrations.huntsman.science_report import (
     SCIENCE_REPORT_FILENAME,
     build_science_report,
@@ -199,6 +200,7 @@ def test_science_report_contains_linked_science_and_complete_headers(tmp_path):
     assert written.root_path.name == SCIENCE_REPORT_FILENAME
     assert written.document_count == 1
     assert payload["schema_version"] == 1
+    assert payload["layout_version"] == 2
     assert payload["document_type"] == "run"
     assert payload["batch"]["metadata_sources"]["camera_id"] == "UNITID"
     assert payload["batch"]["metadata_sources"]["sensor_id"] == "CAMSERNO"
@@ -338,8 +340,16 @@ def test_huntsman_runner_publishes_science_report_and_manifest_link(tmp_path, mo
     )
 
     report_path = Path(manifest["science_report_path"])
-    stored_manifest = json.loads((output / batch.output_label / "huntsman_manifest.json").read_text())
+    batch_dir = batch_output_directory(output, batch)
+    stored_manifest = json.loads((batch_dir / "huntsman_manifest.json").read_text())
     assert manifest["status"] == "success"
+    assert manifest["layout_version"] == 2
     assert report_path.is_file()
+    assert report_path == batch_dir / SCIENCE_REPORT_FILENAME
+    assert Path(manifest["result_path"]) == batch_dir / "senpai" / "result.json"
+    assert Path(manifest["summary_path"]) == batch_dir / "senpai" / "summary.json"
+    assert (batch_dir / "senpai" / "frames" / "frame_0_sidereal.json").is_file()
+    assert (batch_dir / "provenance" / "config.yaml").is_file()
+    assert (batch_dir / "provenance" / "command.txt").is_file()
     assert stored_manifest["science_report_id"] == manifest["science_report_id"]
     assert json.loads(report_path.read_text())["status"] == "success"

@@ -81,3 +81,31 @@ instead of advertising an incomplete science product.
 Existing successful outputs are still honoured by the adapter's
 `skip_existing` behavior. Use the Huntsman CLI's reprocess option when a
 science report must be backfilled for an older result.
+
+## Filesystem layout
+
+New Huntsman products use filesystem `layout_version: 2`. The controller
+supplies one task/camera product root and SENPAI publishes each group below
+stable SensorKit-task and filter directories:
+
+```text
+<task-camera-products>/
+├── huntsman_batch_summary.json
+└── batches/<SKTASKID>/<FILTER>/
+    ├── huntsman_manifest.json
+    ├── science_report.json
+    ├── science_report_parts/<generation>/part_0001/science_report.json
+    ├── senpai/
+    │   ├── result.json
+    │   ├── summary.json
+    │   └── frames/frame_0000_rate.json
+    ├── provenance/
+    │   ├── command.txt
+    │   └── config.yaml
+    └── artifacts/
+```
+
+Target, NORAD and sensor labels remain in report metadata rather than in the
+directory name. They may be absent in historical files or corrected later;
+`SKTASKID` and filter provide the stable batch path. When `SKTASKID` is absent,
+the adapter uses its existing task-identity fallback.

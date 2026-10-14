@@ -31,7 +31,12 @@ from senpai.integrations.huntsman.quality import (
     SiderealQualityResult,
     select_batch_frames,
 )
-from senpai.integrations.huntsman.runner import has_pending_batches
+from senpai.integrations.huntsman.runner import (
+    batch_output_directory,
+    batch_relative_directory,
+    has_pending_batches,
+    run_huntsman_batches,
+)
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "resources" / "config"
 
@@ -105,9 +110,7 @@ def test_supported_fits_suffixes(name):
 
 
 def test_parse_old_huntsman_filename():
-    parsed = parse_huntsman_filename(
-        "20260506T081156614_rate_0968299a_F0of2_r.fits.fz"
-    )
+    parsed = parse_huntsman_filename("20260506T081156614_rate_0968299a_F0of2_r.fits.fz")
     assert parsed.recognized
     assert parsed.convention == "old"
     assert parsed.filename_task_id == "0968299a"
@@ -119,9 +122,7 @@ def test_parse_old_huntsman_filename():
 
 
 def test_parse_new_huntsman_filename():
-    parsed = parse_huntsman_filename(
-        "260731T174744_25371_019fb948_g_F1of2_sidereal.fits"
-    )
+    parsed = parse_huntsman_filename("260731T174744_25371_019fb948_g_F1of2_sidereal.fits")
     assert parsed.recognized
     assert parsed.convention == "new"
     assert parsed.filename_norad_id == "25371"
@@ -138,9 +139,7 @@ def test_unknown_filename_is_non_raising():
     assert parsed.filename_task_id is None
 
 
-def test_discovery_prefers_full_task_id_and_separates_filters(
-    tmp_path, huntsman_config
-):
+def test_discovery_prefers_full_task_id_and_separates_filters(tmp_path, huntsman_config):
     full_id = "019fb948-aaaa-bbbb-cccc-0123456789ab"
     common = {
         "SKTASKID": full_id,
@@ -181,9 +180,7 @@ def test_discovery_prefers_full_task_id_and_separates_filters(
     assert len(by_filter["r"].rate_frames) == 1
 
 
-def test_discovery_preserves_header_identity_and_separates_cameras(
-    tmp_path, huntsman_config
-):
+def test_discovery_preserves_header_identity_and_separates_cameras(tmp_path, huntsman_config):
     common = {
         "SKTASKID": "sensorkit-task",
         "TASKID": "controller-task",
@@ -238,9 +235,7 @@ def test_discovery_preserves_header_identity_and_separates_cameras(
         assert len(batch.sidereal_frames) == 1
 
 
-def test_discovery_accepts_deployed_huntsman_identity_cards(
-    tmp_path, huntsman_config
-):
+def test_discovery_accepts_deployed_huntsman_identity_cards(tmp_path, huntsman_config):
     common = {
         "SKTASKID": "sensorkit-task",
         "TASKID": "controller-task",
@@ -341,6 +336,7 @@ def test_output_label_contains_norad_filter_sensor_and_full_task():
         frames=[_record("rate.fits", TrackMode.RATE)],
     )
     assert batch.output_label == "obsunknown_25371_g_Huntsman-1_full-task-id"
+    assert batch_relative_directory(batch) == Path("batches/full-task-id/g")
 
 
 def test_sharpest_policy_selects_lowest_fwhm():
@@ -428,7 +424,7 @@ def test_minimal_cli_defaults_to_safe_skips():
     assert args.allow_blurry_sidereal is False
 
 
-def test_completed_batch_needs_no_pipeline_preflight(tmp_path):
+def test_completed_batch_needs_no_pipeline_preflight(tmp_path, huntsman_config):
     batch = HuntsmanBatch(
         task_id="full-task-id",
         task_id_source="SKTASKID",
@@ -437,14 +433,49 @@ def test_completed_batch_needs_no_pipeline_preflight(tmp_path):
         norad_id="25371",
         frames=[_record("rate.fits", TrackMode.RATE)],
     )
-    output_dir = tmp_path / batch.output_label
-    output_dir.mkdir()
-    write_json(output_dir / "huntsman_manifest.json", {"status": "success"})
+    output_dir = batch_output_directory(tmp_path, batch)
+    output_dir.mkdir(parents=True)
+    write_json(
+        output_dir / "huntsman_manifest.json",
+        {
+            "status": "success",
+            "science_report_id": "report-1",
+            "science_report_path": str(output_dir / "science_report.json"),
+            "science_report_document_count": 1,
+        },
+    )
 
     discovery = HuntsmanDiscovery(batches=[batch])
 
     assert not has_pending_batches(discovery, tmp_path)
     assert has_pending_batches(discovery, tmp_path, skip_existing=False)
+    results = run_huntsman_batches(discovery, tmp_path, huntsman_config)
+    assert results[0]["status"] == "skipped_existing"
+    assert results[0]["existing_status"] == "success"
+    assert results[0]["science_report_id"] == "report-1"
+
+
+def test_v2_layout_rejects_mixed_cameras_with_same_task_and_filter(tmp_path, huntsman_config):
+    batches = [
+        HuntsmanBatch(
+            task_id="sensor-task",
+            task_id_source="SKTASKID",
+            filter_name="r",
+            sensor="shared-model",
+            norad_id="25371",
+            frames=[_record(f"{camera_id}.fits", TrackMode.RATE)],
+            sktask_id="sensor-task",
+            camera_id=camera_id,
+        )
+        for camera_id in ("C3", "C4")
+    ]
+
+    with pytest.raises(ValueError, match="separate task/camera product root"):
+        run_huntsman_batches(
+            HuntsmanDiscovery(batches=batches),
+            tmp_path,
+            huntsman_config,
+        )
 
 
 def test_shared_json_writer_is_pretty_and_round_trips(tmp_path):

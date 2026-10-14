@@ -60,6 +60,7 @@ class ScienceReport(BaseModel):
 
     report_type: Literal["senpai_science"] = "senpai_science"
     schema_version: Literal[1] = SCIENCE_REPORT_SCHEMA_VERSION
+    layout_version: Literal[2] = 2
     document_type: Literal["run"] = "run"
     document_key: str
     science_report_id: str
@@ -92,6 +93,7 @@ class ScienceMeasurementPart(BaseModel):
 
     report_type: Literal["senpai_science"] = "senpai_science"
     schema_version: Literal[1] = SCIENCE_REPORT_SCHEMA_VERSION
+    layout_version: Literal[2] = 2
     document_type: Literal["calibration_measurements"] = "calibration_measurements"
     document_key: str
     science_report_id: str
@@ -344,6 +346,10 @@ def _observation_window(inputs: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _artifact_type(path: Path) -> str:
     name = path.name.casefold()
+    if name == "summary.json" and path.parent.name.casefold() == "senpai":
+        return "senpai_summary"
+    if name == "result.json" and path.parent.name.casefold() == "senpai":
+        return "senpai_result"
     if name.startswith("senpai_") and name.endswith("_summary.json"):
         return "senpai_summary"
     if name.startswith("senpai_") and name.endswith(".json"):
@@ -656,8 +662,8 @@ def build_science_report(
             "senpai_git_commit": git_commit,
             "container_digest": os.environ.get("SENPAI_CONTAINER_DIGEST"),
             "configuration_hash": config_hash,
-            "configuration_artifact": "config.yaml",
-            "command_artifact": "command.txt",
+            "configuration_artifact": "provenance/config.yaml",
+            "command_artifact": "provenance/command.txt",
             "completed": result.completed if result is not None else False,
             "compute_seconds": result.compute_seconds if result is not None else None,
             "elapsed_seconds": elapsed_seconds,
