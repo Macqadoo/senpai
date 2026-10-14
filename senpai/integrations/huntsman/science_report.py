@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import uuid
@@ -27,6 +28,8 @@ from senpai.core.config import AppConfig
 from senpai.engine.models.senpai import SenpaiRunResult, SenpaiRunSummary
 from senpai.integrations.huntsman.batches import HuntsmanBatch, HuntsmanFrameRecord
 from senpai.integrations.huntsman.quality import HuntsmanBatchSelection
+
+logger = logging.getLogger(__name__)
 
 SCIENCE_REPORT_SCHEMA_VERSION = 1
 SCIENCE_REPORT_FILENAME = "science_report.json"
@@ -715,18 +718,45 @@ def _chunk_measurements(
     max_document_bytes: int,
     generation: str,
 ) -> list[list[dict[str, Any]]]:
+    """Split measurements without repeatedly serializing a growing chunk.
+
+    A one-measurement probe gives the encoded contribution of that
+    measurement to a continuation document.  Summing those contributions is
+    conservative: pretty-printed JSON is two bytes smaller for every item
+    after the first because adjacent list items share a separator.  The old
+    implementation serialized the entire candidate list for every item,
+    making large catalog results quadratic in both copied and encoded data.
+    """
+
+    if not measurements:
+        return []
+
+    # Continuation documents require at least one measurement, so derive the
+    # fixed wrapper size from a valid one-item model and then empty its dumped
+    # representation solely for byte accounting.
+    empty_payload = _part_payload(report, [measurements[0]], 999_999, 999_999, generation).model_dump(mode="json")
+    empty_payload["measurement_count"] = 0
+    empty_payload["measurements"] = []
+    empty_size = len(_encoded_json(empty_payload))
+    if empty_size > max_document_bytes:
+        raise ScienceReportError("science report part metadata exceeds the safe MongoDB document size")
+
     chunks: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
+    estimated_size = empty_size
     for measurement in measurements:
-        candidate = [*current, measurement]
-        probe = _part_payload(report, candidate, 999_999, 999_999, generation)
-        if len(_encoded_json(probe.model_dump(mode="json"))) <= max_document_bytes:
-            current = candidate
-            continue
-        if not current:
+        single_probe = _part_payload(report, [measurement], 999_999, 999_999, generation)
+        contribution = len(_encoded_json(single_probe.model_dump(mode="json"))) - empty_size
+        if empty_size + contribution > max_document_bytes:
             raise ScienceReportError("one calibration measurement exceeds the safe MongoDB document size")
-        chunks.append(current)
-        current = [measurement]
+
+        if current and estimated_size + contribution > max_document_bytes:
+            chunks.append(current)
+            current = []
+            estimated_size = empty_size
+
+        current.append(measurement)
+        estimated_size += contribution
     if current:
         chunks.append(current)
     return chunks
@@ -782,9 +812,15 @@ def write_science_report(
     measurements = _extract_calibration_measurements(root_payload)
     if not measurements:
         raise ScienceReportError(f"science report is {full_size} bytes without splittable calibration measurements")
+    logger.info(
+        "Science report is %.1f MiB; splitting %d calibration measurements into MongoDB-safe documents",
+        full_size / (1024 * 1024),
+        len(measurements),
+    )
     generation = report.product_fingerprint.removeprefix("sha256:")[:16]
     chunks = _chunk_measurements(report, measurements, max_document_bytes, generation)
     parts_total = len(chunks) + 1
+    logger.info("Writing science report root and %d calibration measurement parts", len(chunks))
     part_models = [
         _part_payload(report, chunk, index, parts_total, generation) for index, chunk in enumerate(chunks, start=1)
     ]

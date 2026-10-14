@@ -18,6 +18,7 @@ from senpai.engine.models.senpai import (
 )
 from senpai.engine.models.starfield import SatelliteInImage
 from senpai.integrations.huntsman import runner as huntsman_runner
+from senpai.integrations.huntsman import science_report as science_report_module
 from senpai.integrations.huntsman.batches import HuntsmanBatch, HuntsmanFrameRecord
 from senpai.integrations.huntsman.filenames import ParsedHuntsmanFilename
 from senpai.integrations.huntsman.quality import HuntsmanBatchSelection
@@ -243,6 +244,59 @@ def test_large_calibration_results_use_linked_same_name_parts(tmp_path):
     assert sum(part["measurement_count"] for part in parts) == 200
     assert all(part["science_report_id"] == root["science_report_id"] for part in parts)
     assert all(len(path.read_bytes()) <= 20_000 for path in written.part_paths)
+
+
+def test_calibration_chunk_sizing_is_linear(tmp_path, monkeypatch):
+    n_measurements = 500
+    batch, selection, result, summary, config, output = _products(tmp_path, n_measurements=n_measurements)
+    report = build_science_report(
+        batch=batch,
+        selection=selection,
+        config=config,
+        batch_dir=output,
+        status="success",
+        error=None,
+        elapsed_seconds=3.0,
+        result=result,
+        summary=summary,
+    )
+    payload = report.model_dump(mode="json")
+    measurements = science_report_module._extract_calibration_measurements(payload)
+
+    encoded_measurement_slots = 0
+    original_encoded_json = science_report_module._encoded_json
+
+    def counting_encoded_json(value):
+        nonlocal encoded_measurement_slots
+        if isinstance(value, dict):
+            encoded_measurement_slots += len(value.get("measurements", []))
+        return original_encoded_json(value)
+
+    monkeypatch.setattr(science_report_module, "_encoded_json", counting_encoded_json)
+    chunks = science_report_module._chunk_measurements(
+        report,
+        measurements,
+        max_document_bytes=20_000,
+        generation="performance-test",
+    )
+
+    assert sum(map(len, chunks)) == n_measurements
+    assert encoded_measurement_slots == n_measurements
+    assert all(
+        len(
+            original_encoded_json(
+                science_report_module._part_payload(
+                    report,
+                    chunk,
+                    part_number=index,
+                    parts_total=len(chunks) + 1,
+                    generation="performance-test",
+                ).model_dump(mode="json")
+            )
+        )
+        <= 20_000
+        for index, chunk in enumerate(chunks, start=1)
+    )
 
 
 def test_huntsman_runner_publishes_science_report_and_manifest_link(tmp_path, monkeypatch):

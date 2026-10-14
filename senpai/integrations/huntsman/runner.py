@@ -94,6 +94,7 @@ def _publish_science_report(
 ) -> dict:
     """Write the stable NiFi/MongoDB science product and enrich the manifest."""
 
+    logger.info("Building science report for Huntsman batch %s", batch.batch_id)
     report = build_science_report(
         batch=batch,
         selection=selection,
@@ -106,7 +107,17 @@ def _publish_science_report(
         summary=summary,
         terminal_manifest=manifest,
     )
+    logger.info(
+        "Publishing science report for Huntsman batch %s (%d calibration measurements)",
+        batch.batch_id,
+        report.calibration_measurement_count,
+    )
     written = write_science_report(report, batch_dir)
+    logger.info(
+        "Published science report for Huntsman batch %s as %d linked document(s)",
+        batch.batch_id,
+        written.document_count,
+    )
     return {**manifest, **written.to_manifest()}
 
 
@@ -127,7 +138,10 @@ def _process_batch(
         logger.info("Skipping existing Huntsman batch %s", batch.batch_id)
         return {**base_manifest, "status": "skipped_existing", "error": None}
 
-    config.runtime.output_dir = batch_dir
+    # RuntimeConfig declares this field as a string. Keep that contract when
+    # assigning a Path-derived batch directory so model_dump(mode="json") does
+    # not emit a Pydantic unexpected-value warning during report generation.
+    config.runtime.output_dir = str(batch_dir)
     config.runtime.run_id = batch.batch_id
     selection = select_batch_frames(
         batch,
