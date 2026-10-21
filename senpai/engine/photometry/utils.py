@@ -97,6 +97,9 @@ class SimplePhotometrySummary:
     limiting_magnitude: float  # Estimated limiting magnitude (at configured completeness, typically 50%)
     zero_point: float | None = None  # Photometric zero point
     zero_point_err: float | None = None  # Zero point uncertainty
+    observation_filter: str | None = None  # Filter reported by the science frame
+    zero_point_catalog_band: str | None = None  # Single catalog band used for the primary ZP
+    zero_point_band_source: str | None = None  # Mapping or fallback that selected the catalog band
     limiting_snr: float | None = None  # SNR threshold used for limiting magnitude calculation
     limiting_magnitude_50: float | None = None  # Limiting magnitude at 50% completeness
     limiting_magnitude_90: float | None = None  # Limiting magnitude at 90% completeness
@@ -170,6 +173,8 @@ class _ZeroPointFit:
     zero_point_err: float | None
     selections: list[_ZeroPointSelection]
     snr_threshold: float | None = None
+    catalog_band: str | None = None
+    band_source: str | None = None
 
 
 def empirical_background_std_adu(image_data: np.ndarray) -> float:
@@ -407,6 +412,7 @@ def measure_simple_starfield_photometry(
     starfield: StarField,
     config: SimplePhotometryConfig | None = None,
     frame_index: int | None = None,
+    observation_filter: str | None = None,
 ) -> tuple[list[SimplePhotometryResult], SimplePhotometrySummary]:
     """
     Perform simple photometry on all stars in a starfield.
@@ -419,6 +425,9 @@ def measure_simple_starfield_photometry(
         Starfield with detected and catalog stars
     config : SimplePhotometryConfig, optional
         Photometry configuration
+    observation_filter : str, optional
+        Filter reported by the science frame. When configured, this selects
+        the matching catalog band for the primary zero-point fit.
 
     Returns
     -------
@@ -436,6 +445,7 @@ def measure_simple_starfield_photometry(
             median_snr=0,
             median_background=0,
             limiting_magnitude=0,
+            observation_filter=observation_filter,
         )
 
     fwhm = starfield.fwhm_stats.median_fwhm
@@ -451,6 +461,7 @@ def measure_simple_starfield_photometry(
             median_snr=0,
             median_background=0,
             limiting_magnitude=0,
+            observation_filter=observation_filter,
         )
 
     # ------------------------------------------------------------------
@@ -483,6 +494,7 @@ def measure_simple_starfield_photometry(
             median_snr=0,
             median_background=0,
             limiting_magnitude=0,
+            observation_filter=observation_filter,
         )
 
     # Sample stars by magnitude bins to limit processing time while maintaining
@@ -490,18 +502,21 @@ def measure_simple_starfield_photometry(
     MAX_STARS_PER_BIN = 500
     MAG_BIN_WIDTH = 1.0  # 1 magnitude bin width
 
-    # Extract magnitudes for all valid stars
-    star_magnitudes = []
-    for star in valid_stars:
-        # Get best available magnitude
-        mag = None
-        if hasattr(star, "magnitude") and star.magnitude is not None:
-            mag = star.magnitude
-        elif hasattr(star, "magnitudes") and star.magnitudes:
-            # Use first available magnitude from dict
-            mag = next(iter(star.magnitudes.values()))
-
-        star_magnitudes.append(mag if mag is not None else 99.0)  # Default to very faint if no mag
+    # Sample in the same catalog band that will calibrate this frame.
+    sampling_band, _band_source = _resolve_catalog_band(
+        valid_stars, observation_filter, config
+    )
+    sampling_magnitudes = _precompute_star_magnitudes(
+        valid_stars,
+        config.preferred_filters,
+        catalog_band=sampling_band,
+    )
+    star_magnitudes = [
+        sampling_magnitudes[id(star)]
+        if sampling_magnitudes[id(star)] is not None
+        else 99.0
+        for star in valid_stars
+    ]
 
     star_magnitudes = np.array(star_magnitudes)
 
@@ -665,7 +680,13 @@ def measure_simple_starfield_photometry(
         )
 
     # Calculate summary statistics
-    summary = _calculate_simple_photometry_summary(results, starfield, config, frame_index=frame_index)
+    summary = _calculate_simple_photometry_summary(
+        results,
+        starfield,
+        config,
+        frame_index=frame_index,
+        observation_filter=observation_filter,
+    )
 
     # Record the literal circular aperture/annulus pixel dims used here, so the
     # geometry is recoverable per frame without re-deriving FWHM × factors.
@@ -743,6 +764,7 @@ def measure_rate_starfield_photometry(
     streak: "StreakMetadata",
     config: SimplePhotometryConfig | None = None,
     frame_index: int | None = None,
+    observation_filter: str | None = None,
 ) -> tuple[list[SimplePhotometryResult], SimplePhotometrySummary]:
     """
     Perform photometry on rate-track starfield using rectangular apertures.
@@ -760,6 +782,9 @@ def measure_rate_starfield_photometry(
         Measured streak parameters (length, angle, FWHM)
     config : SimplePhotometryConfig, optional
         Photometry configuration
+    observation_filter : str, optional
+        Filter reported by the science frame. When configured, this selects
+        the matching catalog band for the primary zero-point fit.
 
     Returns
     -------
@@ -791,6 +816,7 @@ def measure_rate_starfield_photometry(
             median_snr=0,
             median_background=0,
             limiting_magnitude=0,
+            observation_filter=observation_filter,
         )
 
     # Calculate rectangular aperture dimensions from streak
@@ -832,20 +858,27 @@ def measure_rate_starfield_photometry(
             median_snr=0,
             median_background=0,
             limiting_magnitude=0,
+            observation_filter=observation_filter,
         )
 
     # Sample stars by magnitude (same logic as circular version)
     MAX_STARS_PER_BIN = 500
     MAG_BIN_WIDTH = 1.0
 
-    star_magnitudes = []
-    for star in valid_stars:
-        mag = None
-        if hasattr(star, "magnitude") and star.magnitude is not None:
-            mag = star.magnitude
-        elif hasattr(star, "magnitudes") and star.magnitudes:
-            mag = next(iter(star.magnitudes.values()))
-        star_magnitudes.append(mag if mag is not None else 99.0)
+    sampling_band, _band_source = _resolve_catalog_band(
+        valid_stars, observation_filter, config
+    )
+    sampling_magnitudes = _precompute_star_magnitudes(
+        valid_stars,
+        config.preferred_filters,
+        catalog_band=sampling_band,
+    )
+    star_magnitudes = [
+        sampling_magnitudes[id(star)]
+        if sampling_magnitudes[id(star)] is not None
+        else 99.0
+        for star in valid_stars
+    ]
 
     star_magnitudes = np.array(star_magnitudes)
 
@@ -1010,7 +1043,13 @@ def measure_rate_starfield_photometry(
         )
 
     # Calculate summary statistics (same function as circular version)
-    summary = _calculate_simple_photometry_summary(results, starfield, config, frame_index=frame_index)
+    summary = _calculate_simple_photometry_summary(
+        results,
+        starfield,
+        config,
+        frame_index=frame_index,
+        observation_filter=observation_filter,
+    )
 
     # Record the literal rectangular aperture/annulus pixel dims used here. The
     # rate box is streak-aligned (theta_rad) and can't be reconstructed from
@@ -1396,7 +1435,9 @@ def _get_best_magnitude(
     return magnitude
 
 
-def _find_common_magnitude_system(stars: list[StarInSpace], preferred_filters: list[str] = None) -> str | None:
+def _find_common_magnitude_system(
+    stars: list[StarInSpace], preferred_filters: list[str] | None = None
+) -> str | None:
     """
     Find the best magnitude system with the most star coverage.
 
@@ -1465,8 +1506,78 @@ def _find_common_magnitude_system(stars: list[StarInSpace], preferred_filters: l
     return None
 
 
+def _catalog_magnitude_for_band(
+    star: StarInSpace,
+    catalog_band: str | None,
+) -> tuple[float | None, str | None]:
+    """Return one star's magnitude in the already-selected catalog band."""
+
+    if catalog_band is None:
+        return None, None
+
+    if catalog_band.casefold() == "primary":
+        magnitude = getattr(star, "magnitude", None)
+        return magnitude, "Primary"
+
+    magnitudes = getattr(star, "magnitudes", None) or {}
+    return magnitudes.get(catalog_band), catalog_band
+
+
+def _resolve_catalog_band(
+    stars: list[StarInSpace],
+    observation_filter: str | None,
+    config: SimplePhotometryConfig,
+) -> tuple[str | None, str | None]:
+    """Select one catalog band for an entire frame.
+
+    A configured observation-filter mapping is strict: if a ``g`` frame maps
+    to ``Sloan_g``, stars without Sloan_g are rejected instead of silently
+    borrowing Sloan_r or another band. For absent or unknown image filters, a
+    single common preferred band is selected for backward compatibility.
+    """
+
+    normalized_filter = str(observation_filter).strip().casefold() if observation_filter else None
+    if normalized_filter:
+        for image_filter, catalog_band in config.observation_filter_map.items():
+            if str(image_filter).strip().casefold() == normalized_filter:
+                logger.info(
+                    "Mapped observation filter '%s' to catalog band '%s'",
+                    observation_filter,
+                    catalog_band,
+                )
+                return catalog_band, "observation_filter_map"
+
+        # A frame may already use the catalog's canonical band name.
+        candidate_bands = [
+            *config.observation_filter_map.values(),
+            *config.target_bands,
+            *config.preferred_filters,
+        ]
+        for catalog_band in dict.fromkeys(candidate_bands):
+            if str(catalog_band).strip().casefold() == normalized_filter:
+                return catalog_band, "observation_filter_identity"
+
+        logger.warning(
+            "No catalog-band mapping for observation filter '%s'; "
+            "falling back to one common preferred catalog band",
+            observation_filter,
+        )
+
+    common_band = _find_common_magnitude_system(stars, config.preferred_filters)
+    if common_band is None:
+        logger.warning(
+            "No common catalog magnitude band is available; refusing to mix "
+            "photometric systems within this frame"
+        )
+        return None, "unavailable"
+
+    return common_band, "preferred_common_band"
+
+
 def _precompute_star_magnitudes(
-    stars: list[StarInSpace], preferred_filters: list[str] = None
+    stars: list[StarInSpace],
+    preferred_filters: list[str] | None = None,
+    catalog_band: str | None = None,
 ) -> dict[int, float | None]:
     """Pre-compute magnitudes for all stars using a consistent magnitude system.
 
@@ -1486,11 +1597,12 @@ def _precompute_star_magnitudes(
             "Johnson_B",
         ]
 
-    # Find a common magnitude system for all stars
-    common_filter = _find_common_magnitude_system(stars, preferred_filters)
+    # Use the caller's observation-filter-matched band when supplied;
+    # otherwise find one common fallback band for the whole collection.
+    common_filter = catalog_band or _find_common_magnitude_system(stars, preferred_filters)
 
     mag_cache = {}
-    if common_filter == "primary":
+    if common_filter is not None and common_filter.casefold() == "primary":
         # Use primary magnitude for all stars
         for star in stars:
             mag_cache[id(star)] = star.magnitude if hasattr(star, "magnitude") else None
@@ -1502,14 +1614,13 @@ def _precompute_star_magnitudes(
             else:
                 mag_cache[id(star)] = None
     else:
-        # Fallback: use _get_best_magnitude (but log a warning)
+        # Mixing bands makes the resulting zero point physically ambiguous.
         logger.warning(
-            "Could not find a common magnitude system for all stars. "
-            "Falling back to per-star best magnitude selection. "
-            "This may mix magnitude systems!"
+            "Could not find a common magnitude system for all stars; "
+            "leaving catalog magnitudes unavailable"
         )
         for star in stars:
-            mag_cache[id(star)] = _get_best_magnitude(star, preferred_filters)
+            mag_cache[id(star)] = None
 
     return mag_cache
 
@@ -1652,6 +1763,7 @@ def compute_completeness_curve(
     bin_width: float = 0.5,
     min_stars_per_bin: int = 3,
     isolate: bool = False,
+    observation_filter: str | None = None,
 ) -> tuple[list[float], list[float]]:
     """Compute per-frame magnitude vs detection completeness curve.
 
@@ -1666,6 +1778,7 @@ def compute_completeness_curve(
         config: Photometry config (uses limiting_snr for threshold).
         bin_width: Magnitude bin width (default 0.5 mag).
         min_stars_per_bin: Minimum stars in a bin for meaningful statistics.
+        observation_filter: Filter reported by the science frame.
 
     Returns:
         (completeness_mag, completeness_pct) — parallel arrays sorted bright
@@ -1682,7 +1795,12 @@ def compute_completeness_curve(
     # and the completeness curve comes back empty.
     stars = [r.star for r in results]
     preferred = getattr(config, "preferred_filters", None)
-    mag_cache = _precompute_star_magnitudes(stars, preferred)
+    catalog_band, _band_source = _resolve_catalog_band(
+        stars, observation_filter, config
+    )
+    mag_cache = _precompute_star_magnitudes(
+        stars, preferred, catalog_band=catalog_band
+    )
 
     # Optional isolation cut: drop measured stars with a brighter neighbor in
     # the aperture footprint (their SNR is contaminated). NOTE: applied to the
@@ -1850,6 +1968,7 @@ def _calculate_simple_photometry_summary(
     starfield: StarField,
     config: SimplePhotometryConfig | None = None,
     frame_index: int | None = None,
+    observation_filter: str | None = None,
 ) -> SimplePhotometrySummary:
     """Calculate summary statistics from simple photometry results."""
 
@@ -1864,6 +1983,7 @@ def _calculate_simple_photometry_summary(
             median_background=0,
             limiting_magnitude=0,
             limiting_snr=limiting_snr,
+            observation_filter=observation_filter,
         )
 
     n_stars = len(results)
@@ -1878,13 +1998,22 @@ def _calculate_simple_photometry_summary(
     median_background = float(np.median(backgrounds)) if backgrounds else 0
 
     # Calculate the zero point and retain the per-result selection provenance.
-    zero_point_fit = _calculate_simple_zero_point_details(results, starfield, config)
+    zero_point_fit = _calculate_simple_zero_point_details(
+        results,
+        starfield,
+        config,
+        observation_filter=observation_filter,
+    )
     zero_point = zero_point_fit.zero_point
     zero_point_err = zero_point_fit.zero_point_err
 
     # Estimate limiting magnitude using zero point and sky background when possible
     limiting_magnitude, limiting_magnitude_50, limiting_magnitude_90 = _estimate_simple_limiting_magnitude(
-        results, starfield, zero_point=zero_point, config=config
+        results,
+        starfield,
+        zero_point=zero_point,
+        config=config,
+        observation_filter=observation_filter,
     )
 
     # Multi-band calibration with color terms
@@ -1892,7 +2021,13 @@ def _calculate_simple_photometry_summary(
     if config.enable_color_terms and config.target_bands:
         from senpai.engine.photometry.color_terms import calculate_multiband_calibration
 
-        multiband_calibration = calculate_multiband_calibration(results, starfield, config.target_bands, config)
+        multiband_calibration = calculate_multiband_calibration(
+            results,
+            starfield,
+            config.target_bands,
+            config,
+            observation_filter=observation_filter,
+        )
 
     # Get limiting SNR from config
     limiting_snr = float(config.limiting_snr) if config else None
@@ -1902,7 +2037,11 @@ def _calculate_simple_photometry_summary(
     # residual faint tail (no parametric shape imposed). The crossing happens on
     # the roll-off, before any contamination floor.
     comp_mag, comp_pct = compute_completeness_curve(
-        results, starfield, config, isolate=config.completeness_isolate
+        results,
+        starfield,
+        config,
+        isolate=config.completeness_isolate,
+        observation_filter=observation_filter,
     )
     completeness_target = float(config.limiting_completeness_fraction)
     lim_target, lim_50, lim_90 = _completeness_limits(
@@ -1945,8 +2084,10 @@ def _calculate_simple_photometry_summary(
     stars_isolated: list[bool] = []
     stars_catalog_id: list[str | None] = []
     iso_mask = _isolated_result_mask(results, starfield)
-    for r, iso in zip(results, iso_mask):
-        mag = getattr(r.star, "magnitude", None)
+    for r, selection, iso in zip(
+        results, zero_point_fit.selections, iso_mask, strict=True
+    ):
+        mag = selection.catalog_magnitude
         if mag is None or r.snr is None or r.snr <= 0:
             continue
         stars_mag.append(round(float(mag), 3))
@@ -1973,6 +2114,9 @@ def _calculate_simple_photometry_summary(
         limiting_magnitude=limiting_magnitude,
         zero_point=zero_point,
         zero_point_err=zero_point_err,
+        observation_filter=observation_filter,
+        zero_point_catalog_band=zero_point_fit.catalog_band,
+        zero_point_band_source=zero_point_fit.band_source,
         limiting_snr=limiting_snr,
         limiting_magnitude_50=limiting_magnitude_50,
         limiting_magnitude_90=limiting_magnitude_90,
@@ -1996,6 +2140,7 @@ def _estimate_simple_limiting_magnitude(
     starfield: StarField,
     zero_point: float | None = None,
     config: SimplePhotometryConfig | None = None,
+    observation_filter: str | None = None,
 ) -> tuple[float, float | None, float | None]:
     """
     Estimate limiting magnitude at multiple completeness levels.
@@ -2022,6 +2167,10 @@ def _estimate_simple_limiting_magnitude(
         return (0.0, None, None)
 
     config = _normalize_photometry_config(config)
+    result_stars = [r.star for r in results]
+    catalog_band, _band_source = _resolve_catalog_band(
+        result_stars, observation_filter, config
+    )
 
     # Pre-compute isolation radius for neighbor checks (in pixels)
     iso_radius_pix: float | None = None
@@ -2036,7 +2185,11 @@ def _estimate_simple_limiting_magnitude(
 
         # Pre-compute magnitudes for all catalog stars and build KD-tree for fast neighbor queries
         if catalog_stars and iso_radius_pix is not None:
-            mag_cache = _precompute_star_magnitudes(catalog_stars, config.preferred_filters if config else None)
+            mag_cache = _precompute_star_magnitudes(
+                catalog_stars,
+                config.preferred_filters,
+                catalog_band=catalog_band,
+            )
 
             # Build KD-tree for spatial queries (only for stars with valid positions)
             positions = []
@@ -2062,40 +2215,12 @@ def _estimate_simple_limiting_magnitude(
     mags_all_list: list[float] = []
     snrs_all_list: list[float] = []
 
-    # Pre-compute magnitudes for result stars using a consistent magnitude system
-    # Find common magnitude system first to ensure all stars use the same system
-    result_stars = [r.star for r in results]
-    common_filter = _find_common_magnitude_system(result_stars, config.preferred_filters if config else None)
-
-    if common_filter is not None:
-        logger.info(
-            f"Using consistent magnitude system: {common_filter} (ensures all stars use same photometric system)"
-        )
-    else:
-        logger.warning("Could not find common magnitude system, may mix different systems!")
-
-    result_mag_cache = {}
-    if common_filter == "primary":
-        # Use primary magnitude for all stars
-        for r in results:
-            star_id = id(r.star)
-            if star_id not in result_mag_cache:
-                result_mag_cache[star_id] = r.star.magnitude if hasattr(r.star, "magnitude") else None
-    elif common_filter is not None:
-        # Use the common filter for all stars
-        for r in results:
-            star_id = id(r.star)
-            if star_id not in result_mag_cache:
-                if hasattr(r.star, "magnitudes") and r.star.magnitudes is not None and len(r.star.magnitudes) > 0:
-                    result_mag_cache[star_id] = r.star.magnitudes.get(common_filter)
-                else:
-                    result_mag_cache[star_id] = None
-    else:
-        # Fallback: use per-star best magnitude (not ideal)
-        for r in results:
-            star_id = id(r.star)
-            if star_id not in result_mag_cache:
-                result_mag_cache[star_id] = _get_best_magnitude(r.star, config.preferred_filters if config else None)
+    # Use the same observation-filter-matched catalog band as the primary ZP.
+    result_mag_cache = _precompute_star_magnitudes(
+        result_stars,
+        config.preferred_filters,
+        catalog_band=catalog_band,
+    )
 
     for r in results:
         mag = result_mag_cache[id(r.star)]
@@ -2473,7 +2598,9 @@ def _estimate_simple_limiting_magnitude(
         if star_id in result_mag_cache:
             mag = result_mag_cache[star_id]
         else:
-            mag = _get_best_magnitude(r.star, config.preferred_filters if config else None)
+            mag, _catalog_band = _catalog_magnitude_for_band(
+                r.star, catalog_band
+            )
         if mag is not None:
             catalog_results.append((mag, r.snr))
 
@@ -2505,11 +2632,16 @@ def _calculate_simple_zero_point_details(
     results: list[SimplePhotometryResult],
     starfield: StarField,
     config: SimplePhotometryConfig | None = None,
+    observation_filter: str | None = None,
 ) -> _ZeroPointFit:
     """Calculate the ZP and retain why every result was kept or rejected."""
 
     # Normalize config so we always have SimplePhotometryConfig
     config = _normalize_photometry_config(config)
+    result_stars = [result.star for result in results]
+    catalog_band, band_source = _resolve_catalog_band(
+        result_stars, observation_filter, config
+    )
 
     # Pre-compute isolation radius for neighbor checks (in pixels)
     iso_radius_pix: float | None = None
@@ -2524,7 +2656,11 @@ def _calculate_simple_zero_point_details(
 
         # Pre-compute magnitudes for all catalog stars and build KD-tree for fast neighbor queries
         if catalog_stars and iso_radius_pix is not None:
-            mag_cache = _precompute_star_magnitudes(catalog_stars, config.preferred_filters if config else None)
+            mag_cache = _precompute_star_magnitudes(
+                catalog_stars,
+                config.preferred_filters,
+                catalog_band=catalog_band,
+            )
 
             # Build KD-tree for spatial queries (only for stars with valid positions)
             positions = []
@@ -2542,15 +2678,14 @@ def _calculate_simple_zero_point_details(
             else:
                 kdtree = None
 
-    # Pre-compute both the magnitude and the exact catalog band used for each
-    # result. The previous scalar calculation used the same preferred-band
-    # policy but discarded the band name.
+    # Use exactly one catalog band throughout the frame. A mapped filter is
+    # strict: missing values are rejected rather than substituted per star.
     result_magnitudes: dict[int, tuple[float | None, str | None]] = {}
     for r in results:
         star_id = id(r.star)
         if star_id not in result_magnitudes:
-            result_magnitudes[star_id] = _get_best_magnitude_and_band(
-                r.star, config.preferred_filters
+            result_magnitudes[star_id] = _catalog_magnitude_for_band(
+                r.star, catalog_band
             )
 
     selections = [
@@ -2611,7 +2746,14 @@ def _calculate_simple_zero_point_details(
     if len(selected_indices) < 3:
         for index in selected_indices:
             selections[index].rejection_reason = "insufficient_zero_point_stars"
-        return _ZeroPointFit(None, None, selections, snr_threshold)
+        return _ZeroPointFit(
+            None,
+            None,
+            selections,
+            snr_threshold,
+            catalog_band=catalog_band,
+            band_source=band_source,
+        )
 
     # Get exposure time (handle None case)
     exposure_time = getattr(starfield.image_metadata, "exposure_time", None)
@@ -2646,17 +2788,30 @@ def _calculate_simple_zero_point_details(
     robust_sigma = float(mad_std(kept)) if kept.size > 1 else 0.0
     zero_point_err = robust_sigma / np.sqrt(kept.size) if kept.size else 0.0
 
-    return _ZeroPointFit(zero_point, zero_point_err, selections, snr_threshold)
+    return _ZeroPointFit(
+        zero_point,
+        zero_point_err,
+        selections,
+        snr_threshold,
+        catalog_band=catalog_band,
+        band_source=band_source,
+    )
 
 
 def _calculate_simple_zero_point(
     results: list[SimplePhotometryResult],
     starfield: StarField,
     config: SimplePhotometryConfig | None = None,
+    observation_filter: str | None = None,
 ) -> tuple[float | None, float | None]:
     """Backward-compatible scalar zero-point API."""
 
-    fit = _calculate_simple_zero_point_details(results, starfield, config)
+    fit = _calculate_simple_zero_point_details(
+        results,
+        starfield,
+        config,
+        observation_filter=observation_filter,
+    )
     return fit.zero_point, fit.zero_point_err
 
 

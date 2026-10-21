@@ -565,6 +565,11 @@ def _process_senpai_collect(
             _, summary = measure_simple_starfield_photometry(
                 image_frame.frame, image_frame.starfield, config.photometry,
                 frame_index=image_frame.index,
+                observation_filter=(
+                    image_frame.frame_metadata.observation_filter
+                    if image_frame.frame_metadata
+                    else None
+                ),
             )
             image_frame.photometry_summary = asdict(summary)
             if summary.limiting_magnitude_50 is not None:
@@ -695,6 +700,11 @@ def _process_senpai_collect(
             _, summary = measure_rate_starfield_photometry(
                 image_frame.frame, image_frame.starfield, image_frame.streak,
                 config.photometry, frame_index=image_frame.index,
+                observation_filter=(
+                    image_frame.frame_metadata.observation_filter
+                    if image_frame.frame_metadata
+                    else None
+                ),
             )
             image_frame.photometry_summary = asdict(summary)
             if summary.limiting_magnitude_50 is not None:

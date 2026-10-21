@@ -153,6 +153,7 @@ def test_photometry_defaults() -> None:
     assert p.zp_min_snr == 20.0
     assert p.color_index_bands == ("Gaia_BP", "Gaia_RP")
     assert "Johnson_V" in p.preferred_filters
+    assert p.observation_filter_map == {}
 
 
 def test_validation_defaults() -> None:

@@ -85,10 +85,21 @@ app:
     preferred_filters:
       - Sloan_r
       - Sloan_g
+      - Sloan_i
       - Johnson_V
       - Johnson_R
       - Gaia_G
       - Johnson_B
+    observation_filter_map:
+      g: Sloan_g
+      r: Sloan_r
+      i: Sloan_i
+    target_bands:
+      - Sloan_g
+      - Sloan_r
+      - Sloan_i
+      - Johnson_V
+      - Gaia_G
 
   plotting:
     debug: false

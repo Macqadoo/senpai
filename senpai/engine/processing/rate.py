@@ -217,6 +217,11 @@ def process_rate_fits_rate(
                             wcs_starfield,
                             rate_frame.streak,
                             config.photometry,
+                            observation_filter=(
+                                frame_metadata.observation_filter
+                                if frame_metadata
+                                else None
+                            ),
                         )
                         logger.info(f"Photometry summary: {photometry_summary}")
 

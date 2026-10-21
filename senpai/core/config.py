@@ -519,6 +519,14 @@ class PhotometryConfig(BaseModel):
         default=["Johnson_V", "Johnson_R", "Sloan_r", "Gaia_G", "Sloan_g", "Johnson_B"],
         description="Preferred filters in order of preference",
     )
+    observation_filter_map: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Case-insensitive mapping from an image's observation filter to the "
+            "catalog magnitude band used for its primary zero-point fit. Unknown "
+            "filters fall back to one common band from preferred_filters."
+        ),
+    )
 
     # Multi-band calibration
     target_bands: list[str] = Field(
